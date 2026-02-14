@@ -23,9 +23,31 @@ export const transcribeAudio = async (req, res) => {
             const transcription = await openai.audio.transcriptions.create({
                 file: fs.createReadStream(newFilePath),
                 model: "whisper-1",
+                language: "en", // Use English to get Hindi in Roman script (kaise ho, not कैसे हो)
+                prompt: "english and hindi conversation.",
+                // The prompt hints at romanized Hindi words to guide transcription style
             });
 
-            res.json({ text: transcription.text });
+            let text = transcription.text?.trim() || "";
+
+            // Filter out hallucinated garbage (common patterns when audio is silent/noise)
+            const suspiciousPatterns = [
+                /^MBC$/i,
+                /^[가-힣]+$/,  // Pure Korean
+                /^[ㄱ-ㅎㅏ-ㅣ]+$/,  // Korean jamo
+                /^\.+$/,  // Just dots
+                /^[\s\.,!?]+$/,  // Just punctuation
+                /^(you|thanks for watching|subscribe|please subscribe)/i,  // YouTube hallucinations
+            ];
+
+            const isHallucination = suspiciousPatterns.some(pattern => pattern.test(text)) || text.length < 2;
+
+            if (isHallucination) {
+                // Return empty - user was silent
+                return res.json({ text: "" });
+            }
+
+            res.json({ text });
         } finally {
             // Cleanup: Delete the temp file
             fs.unlink(newFilePath, (err) => {

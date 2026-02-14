@@ -19,6 +19,7 @@ export const requireAuth = async (req, res, next) => {
         }
 
         req.user = user; // 🔥 MongoDB user available everywhere
+        req.clerkId = clerkId; // Fix for controllers using req.clerkId
         next();
     } catch (err) {
         console.error("Auth error:", err);

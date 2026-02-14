@@ -4,6 +4,7 @@ import { requireAuth } from "./middleware/requireAuth.js";
 import clerkWebhook from "./routes/clerkWebhook.js";
 import chatRoutes from "./routes/chat.routes.js";
 import transcribeRoutes from "./routes/transcribe.routes.js";
+import scheduleRoutes from "./routes/schedule.routes.js";
 
 
 const app = express();
@@ -13,6 +14,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use("/webhook", clerkWebhook);
 app.use("/api", chatRoutes);
 app.use("/api/transcribe", transcribeRoutes);
+app.use("/api/schedule", scheduleRoutes);
 
 app.use(
     cors({
