@@ -67,7 +67,6 @@ const tools = [
                     time: { type: "string", description: "New time (optional)." },
                     date: { type: "string", description: "New date (optional)." },
                     completed: { type: "boolean", description: "Mark as completed (true/false)." },
-                    alarmEnabled: { type: "boolean", description: "Enable/disable alarm (true/false)." },
                 },
                 required: ["id"],
             },

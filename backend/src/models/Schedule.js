@@ -8,7 +8,6 @@ const itemSchema = new mongoose.Schema({
     date: String,
     repeat: String,
     selectedDays: [String],
-    alarmEnabled: Boolean,
     notificationEnabled: Boolean,
     completed: Boolean,
     icon: String,
