@@ -27,6 +27,8 @@ const tools = [
                     title: { type: "string", description: "The content of the reminder (e.g., 'Call Mom')" },
                     time: { type: "string", description: "Time in 'h:mm AM/PM' format (e.g., '5:00 PM'). Default to '9:00 AM' if not specified." },
                     date: { type: "string", description: "Date in 'YYYY-MM-DD' format (e.g., '2026-02-09'). Default to today if not specified." },
+                    alarmEnabled: { type: "boolean", description: "Set to true ONLY if the user explicitly asks for an 'alarm'." },
+                    notificationEnabled: { type: "boolean", description: "Set to true if the user asks for a 'notification' or just says 'remind me'." }
                 },
                 required: ["title"],
             },
@@ -48,7 +50,9 @@ const tools = [
                         items: { type: "string", enum: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] },
                         description: "Days of the week for the routine.",
                     },
-                    icon: { type: "string", description: "Icon name (e.g., 'fitness-outline', 'book-outline')." }
+                    icon: { type: "string", description: "Icon name (e.g., 'fitness-outline', 'book-outline')." },
+                    alarmEnabled: { type: "boolean", description: "Set to true ONLY if the user explicitly asks for an 'alarm'." },
+                    notificationEnabled: { type: "boolean", description: "Set to true if the user asks for a 'notification' or 'reminder'." }
                 },
                 required: ["title"],
             },
@@ -67,6 +71,8 @@ const tools = [
                     time: { type: "string", description: "New time (optional)." },
                     date: { type: "string", description: "New date (optional)." },
                     completed: { type: "boolean", description: "Mark as completed (true/false)." },
+                    alarmEnabled: { type: "boolean", description: "Enable or disable loud lock-screen alarm (true/false)." },
+                    notificationEnabled: { type: "boolean", description: "Enable or disable standard push notification (true/false)." },
                 },
                 required: ["id"],
             },
@@ -84,6 +90,8 @@ const tools = [
                     title: { type: "string", description: "New title (optional)." },
                     time: { type: "string", description: "New time (optional)." },
                     selectedDays: { type: "array", items: { type: "string" }, description: "New days (optional)." },
+                    alarmEnabled: { type: "boolean", description: "Enable or disable loud lock-screen alarm (true/false)." },
+                    notificationEnabled: { type: "boolean", description: "Enable or disable standard push notification (true/false)." },
                 },
                 required: ["id"],
             },
@@ -162,6 +170,7 @@ ${scheduleContext}
 
 INSTRUCTIONS:
 - Use the provided tools to create, update, or delete notifications.
+- CRITICAL: Pay strict attention to whether the user wants an "alarm" or a "notification". If they specifically ask for an "alarm" or to "wake up", set alarmEnabled to true and notificationEnabled to false. If they ask for a "notification" or just "remind me", set notificationEnabled to true and alarmEnabled to false.
 - If the user asks to "change" or "reschedule" something, look at the CURRENT SCHEDULE to find the ID and use 'update_...' tools.
 - If the user confirms a pending action ("yes", "do it"), just acknowledge it nicely in text (the frontend handles the confirmation flow usually, but staying consistent is good).
 - **CRITICAL:** If the user says they "completed" or "did" a reminder/routine, DO NOT immediate calling a tool. Instead, ask them: "Well done! Now shall I mark it as complete or delete it?". Wait for their response to either call 'update_reminder(completed: true)' or 'delete_item'.
@@ -194,12 +203,20 @@ INSTRUCTIONS:
 
             // Map tool calls to pendingAction structure
             if (functionName === "create_reminder") {
+                if (args.alarmEnabled === undefined && args.notificationEnabled === undefined) {
+                    args.notificationEnabled = true;
+                    args.alarmEnabled = false;
+                }
                 pendingAction = { type: "create_reminder", data: args };
             } else if (functionName === "create_routine") {
                 // Default defaults if missing
                 if (!args.repeat) args.repeat = "daily";
                 if (!args.selectedDays) args.selectedDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
                 if (!args.icon) args.icon = "time-outline";
+                if (args.alarmEnabled === undefined && args.notificationEnabled === undefined) {
+                    args.notificationEnabled = true;
+                    args.alarmEnabled = false;
+                }
                 pendingAction = { type: "create_routine", data: args };
             } else if (functionName === "update_reminder") {
                 pendingAction = { type: "update_reminder", data: args };
