@@ -8,6 +8,7 @@ import chatRoutes from "./routes/chat.routes.js";
 import transcribeRoutes from "./routes/transcribe.routes.js";
 import scheduleRoutes from "./routes/schedule.routes.js";
 import memoryRoutes from "./routes/memory.routes.js";
+import userRoutes from "./routes/user.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +44,7 @@ app.use("/api", chatRoutes);
 app.use("/api/transcribe", transcribeRoutes);
 app.use("/api/schedule", scheduleRoutes);
 app.use("/api/memory", memoryRoutes);
+app.use("/api/user", userRoutes);
 
 
 app.get("/", (req, res) => {

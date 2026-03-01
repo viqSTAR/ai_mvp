@@ -32,6 +32,11 @@ const userSchema = new mongoose.Schema(
             default: true,
         },
 
+        profileCompleted: {
+            type: Boolean,
+            default: false,
+        },
+
     },
     { timestamps: true }
 );
