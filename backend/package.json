@@ -12,13 +12,17 @@
   "type": "module",
   "dependencies": {
     "@clerk/clerk-sdk-node": "^4.13.23",
+    "cloudinary": "^2.9.0",
     "cors": "^2.8.5",
+    "docx": "^9.6.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "mongoose": "^9.1.1",
     "multer": "^2.0.2",
-    "openai": "^6.16.0"
+    "openai": "^6.16.0",
+    "pdfkit": "^0.17.2",
+    "pptxgenjs": "^4.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

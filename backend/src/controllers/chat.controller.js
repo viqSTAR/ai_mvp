@@ -1,6 +1,9 @@
 import OpenAI from "openai";
 import Conversation from "../models/Conversation.js";
 import Schedule from "../models/Schedule.js";
+import Memory from "../models/Memory.js";
+import { extractMemoriesFromChat, getMemoryContext } from "../services/memory.service.js";
+import { generatePDF, generateDOCX, generatePPTX, generateImage } from "../services/generation.service.js";
 
 let openai;
 
@@ -127,18 +130,183 @@ const tools = [
             },
         },
     },
+    // ─── Memory Management Tools (user can manage memory via chat) ───
+    {
+        type: "function",
+        function: {
+            name: "save_memory",
+            description: "Save a specific fact or preference about the user to memory when they explicitly ask you to remember something.",
+            parameters: {
+                type: "object",
+                properties: {
+                    content: { type: "string", description: "The fact to remember (e.g., 'User prefers morning alarms at 7 AM')" },
+                    category: {
+                        type: "string",
+                        enum: ["preference", "personal_fact", "habit", "context", "instruction"],
+                        description: "Category of the memory.",
+                    },
+                },
+                required: ["content", "category"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "delete_memory",
+            description: "Delete/forget a specific memory when the user asks you to forget something.",
+            parameters: {
+                type: "object",
+                properties: {
+                    content: { type: "string", description: "The memory content to search for and delete (partial match)." },
+                },
+                required: ["content"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "list_memories",
+            description: "Show the user what you remember about them when they ask.",
+            parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+            },
+        },
+    },
+    // ─── Document & Image Generation Tools ───
+    {
+        type: "function",
+        function: {
+            name: "generate_document",
+            description: "Generate a document (PDF, DOCX, or PPTX) on any topic when the user asks for a plan, notes, summary, study material, presentation, or any structured document. Use this whenever the user asks you to 'make a PDF', 'create a doc', 'give me a presentation', 'generate notes', 'make a study plan', etc.",
+            parameters: {
+                type: "object",
+                properties: {
+                    topic: { type: "string", description: "The subject/topic for the document content" },
+                    format: {
+                        type: "string",
+                        enum: ["pdf", "docx", "pptx"],
+                        description: "Document format. Use 'pdf' for general documents, 'docx' for Word docs, 'pptx' for presentations.",
+                    },
+                },
+                required: ["topic", "format"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "generate_image",
+            description: "Generate an AI image using DALL-E 3 when the user asks to create, draw, generate, or make an image, picture, photo, artwork, illustration, or visual.",
+            parameters: {
+                type: "object",
+                properties: {
+                    prompt: { type: "string", description: "Detailed description of the image to generate. Be specific about style, colors, composition." },
+                },
+                required: ["prompt"],
+            },
+        },
+    },
 ];
 
 export const chatWithAI = async (req, res) => {
     const client = getOpenAIClient();
 
     try {
-        const { messages, currentPendingAction } = req.body;
+        const { messages, currentPendingAction, chatId } = req.body;
         const userId = req.clerkId;
 
         if (!messages || !Array.isArray(messages)) {
             return res.status(400).json({ success: false, error: "Messages array is required" });
         }
+
+        let generatedTitlePromise = null;
+        if (messages.length === 1 && messages[0].role === "user") {
+            const firstMessageContent = messages[0].text || "";
+            if (firstMessageContent.trim()) {
+                console.log(`🆕 New chat detected, generating title for: "${firstMessageContent.slice(0, 30)}..."`);
+                const titleContext = `Generate a very short, conversational title (3 to 6 words maximum) summarizing the following message. NEVER use quotes around the title. Just return the title string alone.\n\nMessage: "${firstMessageContent}"`;
+
+                generatedTitlePromise = client.chat.completions.create({
+                    model: "gpt-4o-mini",
+                    messages: [{ role: "user", content: titleContext }],
+                    max_tokens: 15,
+                    temperature: 0.7,
+                }).then(res => {
+                    let title = res.choices[0].message.content.trim();
+                    title = title.replace(/^["']|["']$/g, ''); // Strip quotes
+                    console.log(`✨ Generated chat title: "${title}"`);
+                    return title;
+                }).catch(err => {
+                    console.error("Title generation failed:", err);
+                    return null;
+                });
+            }
+        }
+
+        const sendResponse = async (payload) => {
+            if (generatedTitlePromise) {
+                const title = await generatedTitlePromise;
+                if (title) payload.generatedTitle = title;
+            }
+
+            // ─── AUTO-SAVE TO MONGO ───
+            // If we have a chatId, we save the interaction (last user msg + AI response)
+            if (chatId) {
+                try {
+                    const aiMessage = {
+                        id: Date.now().toString() + "_ai",
+                        role: "ai",
+                        text: payload.message || "",
+                        createdAt: Date.now(),
+                    };
+
+                    // Include generated file metadata if present
+                    if (payload.generatedFile) {
+                        aiMessage.attachments = [{
+                            fileType: payload.generatedFile.type === "image" ? "image" : "document",
+                            uri: payload.generatedFile.downloadUrl || payload.generatedFile.imageUrl,
+                            name: payload.generatedFile.title || payload.generatedFile.fileName,
+                        }];
+                    }
+
+                    // Push user message (last one) and AI response to MongoDB
+                    const userMsg = messages[messages.length - 1];
+                    const mongoMessages = [];
+                    if (userMsg) {
+                        mongoMessages.push({
+                            id: Date.now().toString() + "_user",
+                            role: "user",
+                            text: userMsg.content || "", // handle content array if vision used? for now fallback to string
+                            createdAt: Date.now() - 1000,
+                        });
+                    }
+                    mongoMessages.push(aiMessage);
+
+                    await Conversation.findOneAndUpdate(
+                        { userId, id: chatId },
+                        {
+                            $push: { messages: { $each: mongoMessages } },
+                            $set: { updatedAt: new Date() }
+                        },
+                        { upsert: true }
+                    );
+
+                    if (payload.generatedTitle) {
+                        await Conversation.updateOne({ userId, id: chatId }, { $set: { title: payload.generatedTitle } });
+                    }
+
+                    console.log(`✅ Chat ${chatId} persisted to MongoDB`);
+                } catch (mongoErr) {
+                    console.error("Failed to auto-persist chat to Mongo:", mongoErr);
+                }
+            }
+
+            return res.json(payload);
+        };
 
         // 1. Fetch User's Schedule (Context for Edit/Delete)
         let scheduleContext = "";
@@ -159,25 +327,100 @@ export const chatWithAI = async (req, res) => {
             console.error("Error fetching schedule for context:", err);
         }
 
+        // 1.5. Fetch User's Memories
+        let memoryContext = "";
+        try {
+            memoryContext = await getMemoryContext(userId);
+        } catch (err) {
+            console.error("Error fetching memory context:", err);
+        }
+
         // 2. Prepare System Message
         const today = new Date().toLocaleDateString('en-CA');
+        const now = new Date();
+        const hour = now.getHours();
+        const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "night";
+
         const systemMessage = {
             role: "system",
-            content: `You are a helpful AI assistant managing a user's schedule.
-Today is ${today}.
+            content: `You are a voice-first AI companion designed to support daily life. You are NOT a generic chatbot — you are a reliable presence that stays with the user through the day.
 
+Today is ${today}. Current time of day: ${timeOfDay}.
+
+═══ IDENTITY ═══
+- Your primary role: help the user become more productive, stay organised, focused, emotionally steady, and consistent.
+- You communicate in a calm, human, not robotic, and slightly clingy tone — like a close friend who genuinely cares.
+- You are NOT preachy. NOT robotic. NOT a therapist. NOT superior.
+- You are emotion-aware, motivative, friendly, and consistent.
+- You speak in Gen Z / Gen Alpha tone — natural, relatable, real.
+- Golden rule: If the response feels like it could come from any AI, rewrite it.
+
+═══ VOICE-FIRST RULES ═══
+- Keep replies to 2-5 sentences MAX.
+- Use simple, everyday language.
+- Short sentences. Natural pauses. Conversational pacing.
+- AVOID long paragraphs and lists unless explicitly asked.
+- No "Here are some tips:" or "Let me help you with that!" generic openers.
+- When emotional → slow, gentle tone.
+- When task-based → direct and structured.
+
+═══ MOOD-BASED DELIVERY ═══
+- Morning: chill planning mode. "Hey, so today we got..."
+- Afternoon: focused, check-in energy. "How's it going? Did you get to..."
+- Evening: wind-down, reflective. "Nice day? Let's see what you crushed..."
+- Night: proud, friendly reflection. "You did good today. Seriously."
+- If user seems happy → match their energy, get funny, playful.
+- If user seems angry/frustrated → can playfully push back for a moment to motivate ("acha theek hai, toh ab kya? chal uth").
+- If user seems sad/lonely → gentle, present, no fixing. Just be there.
+
+═══ EMOTIONAL INTELLIGENCE ═══
+- Acknowledge emotion first, always.
+- Do NOT over-diagnose feelings.
+- Do NOT give therapy advice unless explicitly asked.
+- Keep user autonomous — support, don't control.
+- Never shame. Never judge.
+- Praise effort, not just success.
+- Encourage consistency over perfection.
+
+═══ RESEARCH & STUDY MODE ═══
+- When user asks about a topic: summarize first, then ask what depth they want.
+- Use examples over theory.
+- Example response style: "Here's a crisp version — if you want, I can go deeper or turn this into notes."
+
+═══ SCHEDULE TOOLS ═══
 ${scheduleContext}
 
-INSTRUCTIONS:
-- Use the provided tools to create, update, or delete notifications.
-- CRITICAL: Pay strict attention to whether the user wants an "alarm" or a "notification". If they specifically ask for an "alarm" or to "wake up", set alarmEnabled to true and notificationEnabled to false. If they ask for a "notification" or just "remind me", set notificationEnabled to true and alarmEnabled to false.
-- If the user asks to "change" or "reschedule" something, look at the CURRENT SCHEDULE to find the ID and use 'update_...' tools.
-- If the user confirms a pending action ("yes", "do it"), just acknowledge it nicely in text (the frontend handles the confirmation flow usually, but staying consistent is good).
-- **CRITICAL:** If the user says they "completed" or "did" a reminder/routine, DO NOT immediate calling a tool. Instead, ask them: "Well done! Now shall I mark it as complete or delete it?". Wait for their response to either call 'update_reminder(completed: true)' or 'delete_item'.
-- If the user asks if they have a specific reminder/routine (e.g., "Do I have a workout routine?"), use 'get_item' to show them the card if you find a match.
-- Be concise.
-- If creating a routine without specified days, ask for them OR default to "daily" if implied.
-- LANGUAGE: Reply in the same language as the user (Hindi/English).`,
+- Use the provided tools to create, update, or delete reminders and routines.
+- CRITICAL: If user says "alarm" or "wake up" → alarmEnabled=true, notificationEnabled=false. If "notification" or "remind me" → notificationEnabled=true, alarmEnabled=false.
+- To "change" or "reschedule" something → find the ID from CURRENT SCHEDULE and use 'update_...' tools.
+- If user says they "completed" or "did" something → Don't immediately call a tool. Ask: "Nice! Want me to mark it done or delete it?" Wait for response.
+- If user asks about a specific item (e.g. "Do I have a workout?") → use 'get_item' if match found.
+- If creating a routine without specified days → default to "daily".
+
+═══ MEMORY ═══
+${memoryContext}
+
+- Use memories to personalize everything — greet by name, reference their goals, acknowledge their patterns.
+- If user says "remember this" / "yaad rakhna" / "note this down" → use 'save_memory'.
+- If user says "forget this" / "bhool jao" / "delete this memory" → use 'delete_memory'.
+- If user asks "what do you remember?" / "meri memories dikhao" → use 'list_memories'.
+
+═══ LANGUAGE ═══
+- Reply in the SAME language as the user (Hindi / English / Hinglish). Match their vibe.
+
+═══ FILE & IMAGE GENERATION ═══
+- You can generate documents (PDF, Word, PowerPoint) and images for the user.
+- If user asks for a "PDF", "notes", "study plan", "summary", "presentation" → use 'generate_document' with the right format.
+- If user asks to "create an image", "draw", "generate a picture" → use 'generate_image' with a detailed prompt.
+- For documents: default to PDF unless they specify Word/DOCX or PPT/presentation.
+- For images: enhance the user's description into a detailed, high-quality DALL-E prompt.
+
+═══ NEVER DO THIS ═══
+- Never start with "Sure!" or "Of course!" or "Absolutely!" 
+- Never use "As an AI..." or "I don't have feelings..."
+- Never give unsolicited life advice paragraphs.
+- Never sound corporate or customer-service-y.
+- Never list things when a sentence would do.`,
         };
 
         // 3. Call OpenAI
@@ -237,21 +480,253 @@ INSTRUCTIONS:
                     }
                 }
             }
+            // ─── Memory Management via Chat ───
+            else if (functionName === "save_memory") {
+                try {
+                    await Memory.create({
+                        userId,
+                        category: args.category || "context",
+                        content: args.content,
+                        source: "chat",
+                    });
+                    console.log("🧠 Memory saved via chat:", args.content);
+                } catch (err) {
+                    console.error("Save memory via chat error:", err);
+                }
 
-            // Generate a natural confirmation message based on the action
+                // Trigger background extraction as well
+                extractMemoriesFromChat(userId, messages).catch(() => { });
+
+                return await sendResponse({
+                    success: true,
+                    message: `Got it! I'll remember that. 🧠`,
+                    pendingAction: null,
+                });
+            } else if (functionName === "delete_memory") {
+                try {
+                    const result = await Memory.updateMany(
+                        {
+                            userId,
+                            active: true,
+                            content: { $regex: args.content, $options: "i" },
+                        },
+                        { active: false }
+                    );
+                    const count = result.modifiedCount || 0;
+                    console.log(`🧠 Deleted ${count} memories matching: "${args.content}"`);
+
+                    return await sendResponse({
+                        success: true,
+                        message: count > 0
+                            ? `Done! I've forgotten ${count} related memor${count === 1 ? "y" : "ies"}. 🗑️`
+                            : `I couldn't find any memories matching that. Nothing to forget!`,
+                        pendingAction: null,
+                    });
+                } catch (err) {
+                    console.error("Delete memory via chat error:", err);
+                    return await sendResponse({
+                        success: true,
+                        message: "Sorry, I had trouble forgetting that. Try again?",
+                        pendingAction: null,
+                    });
+                }
+            } else if (functionName === "list_memories") {
+                try {
+                    const memories = await Memory.find({ userId, active: true })
+                        .sort({ updatedAt: -1 })
+                        .limit(20);
+
+                    if (memories.length === 0) {
+                        return await sendResponse({
+                            success: true,
+                            message: "I don't have any memories saved about you yet. Chat with me more, and I'll start learning! 🧠",
+                            pendingAction: null,
+                        });
+                    }
+
+                    let memoryList = "Here's what I remember about you:\n\n";
+                    const categoryLabels = {
+                        personal_fact: "👤 Personal",
+                        preference: "⚙️ Preferences",
+                        habit: "🔄 Habits",
+                        context: "📌 Context",
+                        instruction: "📝 Instructions",
+                    };
+
+                    const grouped = {};
+                    for (const m of memories) {
+                        const label = categoryLabels[m.category] || "📌 Other";
+                        if (!grouped[label]) grouped[label] = [];
+                        grouped[label].push(m.content);
+                    }
+
+                    for (const [label, items] of Object.entries(grouped)) {
+                        memoryList += `${label}:\n`;
+                        for (const item of items) {
+                            memoryList += `• ${item}\n`;
+                        }
+                        memoryList += "\n";
+                    }
+
+                    memoryList += "You can ask me to forget anything, or manage your memories in Settings > Your Data.";
+
+                    return await sendResponse({
+                        success: true,
+                        message: memoryList,
+                        pendingAction: null,
+                    });
+                } catch (err) {
+                    console.error("List memories error:", err);
+                    return await sendResponse({
+                        success: true,
+                        message: "Sorry, I had trouble retrieving your memories. Try again?",
+                        pendingAction: null,
+                    });
+                }
+            }
+            // ─── Document & Image Generation via Chat ───
+            else if (functionName === "generate_document") {
+                try {
+                    const { topic, format } = args;
+                    console.log(`📄 Generating ${format.toUpperCase()} about: ${topic}`);
+
+                    let result;
+                    if (format === "pdf") result = await generatePDF(topic);
+                    else if (format === "docx") result = await generateDOCX(topic);
+                    else if (format === "pptx") result = await generatePPTX(topic);
+                    else result = await generatePDF(topic); // fallback to PDF
+
+                    // Build download URL using the server's base URL
+                    const baseUrl = `${req.protocol}://${req.get("host")}`;
+                    const downloadUrl = `${baseUrl}/files/${result.fileName}`;
+
+                    const formatLabel = { pdf: "PDF", docx: "Word Doc", pptx: "PowerPoint" };
+                    const displayName = result.title; // Clean title without extension — frontend adds it
+
+                    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+                    const msg = pick([
+                        `Here's your ${formatLabel[format] || format} on "${result.title}" — tap the link to download it. 📄`,
+                        `Done! Your ${formatLabel[format] || format} is ready. "${result.title}" — check it out. ✨`,
+                        `"${result.title}" ${formatLabel[format] || format} is cooked and ready. Download below. 🔥`,
+                    ]);
+
+                    // Trigger background memory extraction
+                    extractMemoriesFromChat(userId, messages).catch(() => { });
+
+                    return await sendResponse({
+                        success: true,
+                        message: msg,
+                        pendingAction: null,
+                        generatedFile: {
+                            type: "document",
+                            format: format,
+                            fileName: result.fileName,
+                            title: displayName,
+                            downloadUrl: result.cloudinaryUrl || downloadUrl,
+                        },
+                    });
+                } catch (err) {
+                    console.error("Document generation error:", err);
+                    return await sendResponse({
+                        success: true,
+                        message: "Ugh, something went wrong generating your document. Wanna try again?",
+                        pendingAction: null,
+                    });
+                }
+            } else if (functionName === "generate_image") {
+                try {
+                    console.log(`🎨 Generating image: ${args.prompt}`);
+
+                    const result = await generateImage(args.prompt);
+
+                    const baseUrl = `${req.protocol}://${req.get("host")}`;
+                    const imageUrl = `${baseUrl}/files/${result.fileName}`;
+
+                    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+                    const msg = pick([
+                        `Here's what I came up with — check it out. 🎨`,
+                        `Fresh out the DALL-E oven. What do you think? ✨`,
+                        `Here you go — made this just for you. 🖼️`,
+                        `Created! Take a look and let me know if you want any changes.`,
+                    ]);
+
+                    // Trigger background memory extraction
+                    extractMemoriesFromChat(userId, messages).catch(() => { });
+
+                    return await sendResponse({
+                        success: true,
+                        message: msg,
+                        pendingAction: null,
+                        generatedFile: {
+                            type: "image",
+                            fileName: result.fileName,
+                            imageUrl: result.cloudinaryUrl || imageUrl,
+                            revisedPrompt: result.revisedPrompt,
+                        },
+                    });
+                } catch (err) {
+                    console.error("Image generation error:", err);
+                    return await sendResponse({
+                        success: true,
+                        message: "My art skills failed me this time 😅 — wanna try a different prompt?",
+                        pendingAction: null,
+                    });
+                }
+            }
+            const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
             let confirmMessage = "";
-            if (functionName.includes("create")) {
-                confirmMessage = `Done! I've added "${args.title}" to your schedule.`;
-            } else if (functionName.includes("update")) {
-                confirmMessage = `Updated! "${args.title || 'It'}" has been modified.`;
-            } else if (functionName.includes("delete")) {
-                confirmMessage = `Deleted. That's gone from your schedule.`;
+
+            if (functionName === "create_reminder") {
+                confirmMessage = pick([
+                    `Gotchu — "${args.title}" is locked in. I'll make sure you don't forget. 💪`,
+                    `Set! "${args.title}" — I got your back on this one.`,
+                    `"${args.title}" is on the list now. You're staying on top of things fr.`,
+                    `Noted, "${args.title}" is set. I'll nudge you when it's time.`,
+                    `Done — "${args.title}" added. One less thing to stress about.`,
+                ]);
+            } else if (functionName === "create_routine") {
+                confirmMessage = pick([
+                    `"${args.title}" is now part of your routine. Consistency is where the magic is. ✨`,
+                    `Love it — "${args.title}" added to your daily flow. Let's build this habit together.`,
+                    `"${args.title}" routine is set! Small steps, big results. You got this.`,
+                    `Added "${args.title}" to your routine. Showing up is the hardest part — I'll be here to remind you.`,
+                    `Yesss, "${args.title}" is locked in as a routine. Let's keep this streak going. 🔥`,
+                ]);
+            } else if (functionName === "update_reminder") {
+                confirmMessage = pick([
+                    `Updated! "${args.title || 'Your reminder'}" is good to go now.`,
+                    `Changed it up — "${args.title || 'that reminder'}" is updated.`,
+                    `Done tweaking "${args.title || 'it'}". All set now.`,
+                    `Alright, "${args.title || 'your reminder'}" has been adjusted. 👍`,
+                ]);
+            } else if (functionName === "update_routine") {
+                confirmMessage = pick([
+                    `"${args.title || 'Your routine'}" just got an upgrade. Updated! ✅`,
+                    `Changed! "${args.title || 'That routine'}" is adjusted now.`,
+                    `"${args.title || 'Your routine'}" is updated. Adapting is smart, btw.`,
+                    `Tweaked "${args.title || 'it'}" for you. Flexibility is a strength. 💪`,
+                ]);
+            } else if (functionName === "delete_item") {
+                confirmMessage = pick([
+                    `Gone. No trace. Moving on. 🫡`,
+                    `Removed it. Sometimes decluttering your schedule feels great, right?`,
+                    `Deleted. Out of sight, out of mind. ✌️`,
+                    `That's cleared out now. Less noise, more focus.`,
+                    `Poof — gone. Your schedule just got lighter.`,
+                ]);
             } else if (functionName === "get_item") {
                 const title = pendingAction?.data?.title || "that";
-                confirmMessage = `Oh, I got it! You are asking about "${title}".`;
+                confirmMessage = pick([
+                    `Here's what I got on "${title}" — take a look. 👀`,
+                    `Found it! Here's "${title}" for you.`,
+                    `"${title}" — here you go. 📋`,
+                ]);
             }
 
-            return res.json({
+            // 5. Trigger background memory extraction (fire-and-forget)
+            extractMemoriesFromChat(userId, messages).catch(() => { });
+
+            return await sendResponse({
                 success: true,
                 message: confirmMessage, // AI generic confirmation
                 pendingAction,
@@ -259,7 +734,10 @@ INSTRUCTIONS:
         }
 
         // 5. No Tool Call - Normal Response
-        return res.json({
+        // Trigger background memory extraction (fire-and-forget)
+        extractMemoriesFromChat(userId, messages).catch(() => { });
+
+        return await sendResponse({
             success: true,
             message: aiMessage.content,
             pendingAction: null,

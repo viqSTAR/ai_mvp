@@ -4,6 +4,12 @@ const messageSchema = new mongoose.Schema({
     id: String,
     role: { type: String, enum: ["user", "ai"] },
     text: String,
+    type: String, // "file" for attachment-only messages
+    attachments: [{
+        fileType: String, // "image", "video", "document"
+        uri: String,
+        name: String,
+    }],
     createdAt: Number,
 }, { _id: false });
 

@@ -1,12 +1,11 @@
 import express from "express";
 import { chatWithAI, getChatHistory, getChatDetails, syncChatConversation, deleteChatConversation } from "../controllers/chat.controller.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { aiRateLimiter } from "../middleware/aiRateLimit.js";
 import { aiQuotaCheck } from "../middleware/aiQuota.js";
 
 const router = express.Router();
 
-router.post("/chat", requireAuth, aiRateLimiter, aiQuotaCheck, chatWithAI);
+router.post("/chat", requireAuth, aiQuotaCheck, chatWithAI);
 router.get("/chat/history", requireAuth, getChatHistory);
 router.get("/chat/:id", requireAuth, getChatDetails);
 router.post("/chat/sync", requireAuth, syncChatConversation);
