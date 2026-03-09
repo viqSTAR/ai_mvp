@@ -23,8 +23,10 @@ const getClient = () => {
     return openai;
 };
 
-// Ensure output directory exists
-const OUTPUT_DIR = path.join(__dirname, "../../uploads/generated");
+// Ensure output directory exists (use /tmp on Vercel since FS is read-only)
+const OUTPUT_DIR = process.env.VERCEL
+    ? "/tmp/generated"
+    : path.join(__dirname, "../../uploads/generated");
 if (!fs.existsSync(OUTPUT_DIR)) {
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
