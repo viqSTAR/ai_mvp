@@ -23,9 +23,8 @@ export const transcribeAudio = async (req, res) => {
             const transcription = await openai.audio.transcriptions.create({
                 file: fs.createReadStream(newFilePath),
                 model: "whisper-1",
-                language: "en", // Use English to get Hindi in Roman script (kaise ho, not कैसे हो)
-                prompt: "english and hindi conversation.",
-                // The prompt hints at romanized Hindi words to guide transcription style
+                language: "en", // Forces roman script output (kaise ho, not कैसे हो)
+                prompt: "This is a voice command to an AI assistant app. The user speaks in English and Hindi (Hinglish). Common phrases: set alarm, set reminder, remind me, change to alarm, change to notification, schedule, routine, wake me up, snooze, delete, update, in two minutes, tomorrow morning, yaad rakhna, bhool jao, kaise ho, kya haal hai, mujhe yaad dilao.",
             });
 
             let text = transcription.text?.trim() || "";

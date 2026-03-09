@@ -5,7 +5,7 @@ import Memory from "../models/Memory.js";
 import { extractMemoriesFromChat, getMemoryContext } from "../services/memory.service.js";
 import { generatePDF, generateDOCX, generatePPTX, generateImage } from "../services/generation.service.js";
 
-let openai;
+let openai = null;
 
 // Initialise OpenAI client if not already done
 const getOpenAIClient = () => {
@@ -210,6 +210,34 @@ const tools = [
             },
         },
     },
+    {
+        type: "function",
+        function: {
+            name: "search_web",
+            description: "Search Wikipedia for general knowledge, biographies, historical events, science, concepts, or well-established topics. NOT for current/breaking news — use search_current_events for that.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "The specific entity or topic to look up. MUST be extremely concise, using ONLY proper nouns and exact keywords (e.g., 'Ebrahim Raisi', 'Iran United States relations', 'Elon Musk'). NEVER use conversational sentences." },
+                },
+                required: ["query"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "search_current_events",
+            description: "Search for current/recent news, incidents, updates, breaking events, or anything happening RIGHT NOW. Use this when the user asks about latest news, current events, recent incidents, what's happening today, live updates, or any time-sensitive information.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "Concise news search query using keywords (e.g., 'earthquake today', 'India elections 2026', 'tech layoffs'). Keep it short and specific." },
+                },
+                required: ["query"],
+            },
+        },
+    },
 ];
 
 export const chatWithAI = async (req, res) => {
@@ -339,13 +367,15 @@ export const chatWithAI = async (req, res) => {
         const today = new Date().toLocaleDateString('en-CA');
         const now = new Date();
         const hour = now.getHours();
+        const minute = now.getMinutes();
+        const currentTime = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
         const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "night";
 
         const systemMessage = {
             role: "system",
             content: `You are a voice-first AI companion designed to support daily life. You are NOT a generic chatbot — you are a reliable presence that stays with the user through the day.
 
-Today is ${today}. Current time of day: ${timeOfDay}.
+Today is ${today}. Current exact time: ${currentTime} (${timeOfDay}).
 
 ═══ IDENTITY ═══
 - Your primary role: help the user become more productive, stay organised, focused, emotionally steady, and consistent.
@@ -391,7 +421,11 @@ Today is ${today}. Current time of day: ${timeOfDay}.
 ${scheduleContext}
 
 - Use the provided tools to create, update, or delete reminders and routines.
-- CRITICAL: If user says "alarm" or "wake up" → alarmEnabled=true, notificationEnabled=false. If "notification" or "remind me" → notificationEnabled=true, alarmEnabled=false.
+- RELATIVE TIME: When user says "in X minutes" or "in X hours", calculate the exact time from the current time above. Example: if current time is 1:10 AM and user says "in 2 minutes", set time to "1:12 AM".
+- CRITICAL ALARM RULE (applies to BOTH create AND update):
+  • If user says "alarm" or "wake up" or "change to alarm" → ALWAYS set alarmEnabled=true AND notificationEnabled=false
+  • If user says "notification" or "remind me" → ALWAYS set notificationEnabled=true AND alarmEnabled=false
+  • These are MUTUALLY EXCLUSIVE. When enabling one, ALWAYS disable the other.
 - To "change" or "reschedule" something → find the ID from CURRENT SCHEDULE and use 'update_...' tools.
 - If user says they "completed" or "did" something → Don't immediately call a tool. Ask: "Nice! Want me to mark it done or delete it?" Wait for response.
 - If user asks about a specific item (e.g. "Do I have a workout?") → use 'get_item' if match found.
@@ -420,7 +454,16 @@ ${memoryContext}
 - Never use "As an AI..." or "I don't have feelings..."
 - Never give unsolicited life advice paragraphs.
 - Never sound corporate or customer-service-y.
-- Never list things when a sentence would do.`,
+- Never list things when a sentence would do.
+
+═══ REAL-TIME INFORMATION ═══
+- You have access to TWO search tools:
+  1. 'search_web' — for Wikipedia (general knowledge, biographies, science, history)
+  2. 'search_current_events' — for LIVE news, recent incidents, current updates, breaking events
+- When user asks about current events, latest news, incidents, "what's happening", or anything time-sensitive → use 'search_current_events'
+- When user asks about a person, concept, or established topic → use 'search_web'
+- If unsure whether it's current or general → use 'search_current_events' first, then 'search_web' if needed
+- Always cite or summarize the source naturally in your response`,
         };
 
         // 3. Call OpenAI
@@ -672,6 +715,173 @@ ${memoryContext}
                         pendingAction: null,
                     });
                 }
+            } else if (functionName === "search_web") {
+                try {
+                    const query = args.query;
+                    console.log(`🔍 Searching Wikipedia for: ${query}`);
+
+                    let formattedResults = "Web Search Results:\n";
+
+                    try {
+                        const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&utf8=&format=json`;
+                        const res = await fetch(searchUrl, {
+                            headers: { "User-Agent": "AiMVPApp/1.0 (contact: admin@example.com) Node.js/Fetch" }
+                        });
+                        const data = await res.json();
+
+                        if (data.query && data.query.search && data.query.search.length > 0) {
+                            // Take top 2 results
+                            const topResults = data.query.search.slice(0, 2);
+
+                            for (let i = 0; i < topResults.length; i++) {
+                                const title = topResults[i].title;
+                                const summaryUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&titles=${encodeURIComponent(title)}&format=json&explaintext=1`;
+
+                                const summaryRes = await fetch(summaryUrl, {
+                                    headers: { "User-Agent": "AiMVPApp/1.0 (contact: admin@example.com) Node.js/Fetch" }
+                                });
+                                const summaryData = await summaryRes.json();
+                                const pages = summaryData.query.pages;
+                                const pageId = Object.keys(pages)[0];
+                                const extract = pages[pageId].extract;
+
+                                formattedResults += `[Result ${i + 1}] Title: ${title}\nExtract: ${extract ? extract.substring(0, 800) : "No text"}\n\n`;
+                            }
+                        } else {
+                            formattedResults += "No relevant information found on Wikipedia.";
+                        }
+                    } catch (fetchErr) {
+                        console.error("Wikipedia API fetch error:", fetchErr);
+                        formattedResults += "Network error looking up Wikipedia.";
+                    }
+
+                    console.log(`🔍 Search complete`);
+
+                    const toolMessage = {
+                        role: "tool",
+                        tool_call_id: toolCall.id,
+                        content: formattedResults
+                    };
+
+                    // Re-prompt the AI with the new knowledge
+                    // We must pass the exact tool call it requested back to it
+                    const cleanAiMessage = {
+                        role: "assistant",
+                        content: aiMessage.content || null,
+                        tool_calls: aiMessage.tool_calls
+                    };
+
+                    const followupCompletion = await client.chat.completions.create({
+                        model: "gpt-4o",
+                        messages: [
+                            systemMessage,
+                            ...messages.slice(-10),
+                            cleanAiMessage, // The AI's tool call request
+                            toolMessage // The result of the tool
+                        ]
+                    });
+
+                    const finalAiMessage = followupCompletion.choices[0].message;
+
+                    // Trigger background memory extraction
+                    extractMemoriesFromChat(userId, messages).catch(() => { });
+
+                    return await sendResponse({
+                        success: true,
+                        message: finalAiMessage.content,
+                        pendingAction: null,
+                    });
+
+                } catch (err) {
+                    console.error("Web search error:", err);
+                    return await sendResponse({
+                        success: true,
+                        message: "I tried looking that up, but the internet connection snagged. 😅 Want to ask something else?",
+                        pendingAction: null,
+                    });
+                }
+            } else if (functionName === "search_current_events") {
+                try {
+                    const query = args.query;
+                    console.log(`📰 Searching current events for: ${query}`);
+
+                    let formattedResults = "Current News Results:\n";
+
+                    try {
+                        const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en&gl=US&ceid=US:en`;
+                        const rssRes = await fetch(rssUrl, {
+                            headers: { "User-Agent": "AiMVPApp/1.0 Node.js/Fetch" }
+                        });
+                        const rssText = await rssRes.text();
+
+                        // Parse RSS XML manually (no extra dependency)
+                        const items = rssText.match(/<item>[\s\S]*?<\/item>/g) || [];
+                        const topItems = items.slice(0, 5);
+
+                        if (topItems.length === 0) {
+                            formattedResults += "No recent news found for this query.";
+                        } else {
+                            for (let i = 0; i < topItems.length; i++) {
+                                const titleMatch = topItems[i].match(/<title><!\[CDATA\[(.+?)\]\]><\/title>/) || topItems[i].match(/<title>(.+?)<\/title>/);
+                                const pubDateMatch = topItems[i].match(/<pubDate>(.+?)<\/pubDate>/);
+                                const sourceMatch = topItems[i].match(/<source[^>]*><!\[CDATA\[(.+?)\]\]><\/source>/) || topItems[i].match(/<source[^>]*>(.+?)<\/source>/);
+                                const descMatch = topItems[i].match(/<description><!\[CDATA\[(.+?)\]\]><\/description>/) || topItems[i].match(/<description>(.+?)<\/description>/);
+
+                                const title = titleMatch ? titleMatch[1] : "No title";
+                                const pubDate = pubDateMatch ? pubDateMatch[1] : "Unknown date";
+                                const source = sourceMatch ? sourceMatch[1] : "Unknown source";
+                                // Strip HTML tags from description
+                                const desc = descMatch ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 200) : "";
+
+                                formattedResults += `[${i + 1}] ${title}\nSource: ${source} | Date: ${pubDate}\n${desc ? `Summary: ${desc}\n` : ""}\n`;
+                            }
+                        }
+                    } catch (fetchErr) {
+                        console.error("Google News RSS fetch error:", fetchErr);
+                        formattedResults += "Network error fetching current news.";
+                    }
+
+                    console.log(`📰 Current events search complete`);
+
+                    const toolMessage = {
+                        role: "tool",
+                        tool_call_id: toolCall.id,
+                        content: formattedResults
+                    };
+
+                    const cleanAiMessage = {
+                        role: "assistant",
+                        content: aiMessage.content || null,
+                        tool_calls: aiMessage.tool_calls
+                    };
+
+                    const followupCompletion = await client.chat.completions.create({
+                        model: "gpt-4o",
+                        messages: [
+                            systemMessage,
+                            ...messages.slice(-10),
+                            cleanAiMessage,
+                            toolMessage
+                        ]
+                    });
+
+                    const finalAiMessage = followupCompletion.choices[0].message;
+
+                    extractMemoriesFromChat(userId, messages).catch(() => { });
+
+                    return await sendResponse({
+                        success: true,
+                        message: finalAiMessage.content,
+                        pendingAction: null,
+                    });
+                } catch (err) {
+                    console.error("Current events search error:", err);
+                    return await sendResponse({
+                        success: true,
+                        message: "I tried looking up the latest news, but the connection failed. 😅 Want to try a different query?",
+                        pendingAction: null,
+                    });
+                }
             }
             const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
             let confirmMessage = "";
@@ -834,5 +1044,58 @@ export const deleteChatConversation = async (req, res) => {
     } catch (error) {
         console.error("Delete Chat Error:", error);
         res.status(500).json({ error: "Failed to delete chat" });
+    }
+};
+
+// 5. Generate Speech (ElevenLabs TTS Proxy)
+export const generateSpeech = async (req, res) => {
+    try {
+        const { text, voiceId } = req.query;
+        if (!text) return res.status(400).json({ error: "Text is required query parameter" });
+
+        const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+        if (!elevenLabsApiKey) {
+            console.error("ElevenLabs API Key is missing in .env");
+            return res.status(500).json({ error: "TTS Service is not configured" });
+        }
+
+        // Default to a female voice (Rachel)
+        const targetVoiceId = voiceId || "21m00Tcm4TlvDq8ikWAM";
+
+        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${targetVoiceId}?output_format=mp3_44100_128`, {
+            method: "POST",
+            headers: {
+                "Accept": "audio/mpeg",
+                "xi-api-key": elevenLabsApiKey,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                text,
+                model_id: "eleven_multilingual_v2",
+                voice_settings: {
+                    stability: 0.5,
+                    similarity_boost: 0.75
+                }
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("ElevenLabs Error:", errorText);
+            return res.status(response.status).json({ error: "Failed to generate speech" });
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        res.set({
+            "Content-Type": "audio/mpeg",
+            "Content-Length": buffer.length
+        });
+
+        res.send(buffer);
+    } catch (error) {
+        console.error("Generate Speech Error:", error);
+        res.status(500).json({ error: "Failed to generate speech" });
     }
 };
