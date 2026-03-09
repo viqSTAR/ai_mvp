@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -9,6 +12,9 @@ import transcribeRoutes from "./routes/transcribe.routes.js";
 import scheduleRoutes from "./routes/schedule.routes.js";
 import memoryRoutes from "./routes/memory.routes.js";
 import userRoutes from "./routes/user.routes.js";
+import { connectDB } from "./config/db.js";
+
+connectDB();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
