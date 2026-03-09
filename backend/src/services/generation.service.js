@@ -7,7 +7,7 @@
 
 import OpenAI from "openai";
 import PDFDocument from "pdfkit";
-import PptxGenJS from "pptxgenjs";
+// pptxgenjs is loaded dynamically in generatePPTX to avoid ESM/CJS crash on Vercel
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from "docx";
 import fs from "fs";
 import path from "path";
@@ -183,6 +183,7 @@ export const generatePPTX = async (topic) => {
     const fileName = `${Date.now()}_${topic.slice(0, 30).replace(/[^a-zA-Z0-9]/g, "_")}.pptx`;
     const filePath = path.join(OUTPUT_DIR, fileName);
 
+    const { default: PptxGenJS } = await import("pptxgenjs");
     const pptx = new PptxGenJS();
     pptx.layout = "LAYOUT_WIDE";
 
