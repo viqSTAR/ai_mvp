@@ -6,7 +6,7 @@ import { aiQuotaCheck } from "../middleware/aiQuota.js";
 const router = express.Router();
 
 router.post("/chat", requireAuth, aiQuotaCheck, chatWithAI);
-router.get("/chat/tts", requireAuth, aiQuotaCheck, generateSpeech);
+router.post("/chat/tts", requireAuth, aiQuotaCheck, generateSpeech);
 router.get("/chat/history", requireAuth, getChatHistory);
 router.get("/chat/:id", requireAuth, getChatDetails);
 router.post("/chat/sync", requireAuth, syncChatConversation);

@@ -1050,8 +1050,8 @@ export const deleteChatConversation = async (req, res) => {
 // 5. Generate Speech (ElevenLabs TTS Proxy)
 export const generateSpeech = async (req, res) => {
     try {
-        const { text, voiceId } = req.query;
-        if (!text) return res.status(400).json({ error: "Text is required query parameter" });
+        const { text, voiceId } = req.body;
+        if (!text) return res.status(400).json({ error: "Text is required in request body" });
 
         const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
         if (!elevenLabsApiKey) {
