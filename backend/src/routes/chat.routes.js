@@ -7,6 +7,7 @@ const router = express.Router();
 
 router.post("/chat", requireAuth, aiQuotaCheck, chatWithAI);
 router.post("/chat/tts", requireAuth, aiQuotaCheck, generateSpeech);
+router.get("/chat/tts", requireAuth, aiQuotaCheck, generateSpeech);
 router.get("/chat/history", requireAuth, getChatHistory);
 router.get("/chat/:id", requireAuth, getChatDetails);
 router.post("/chat/sync", requireAuth, syncChatConversation);
