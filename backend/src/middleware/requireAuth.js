@@ -3,6 +3,20 @@ import User from "../models/User.js";
 
 export const requireAuth = async (req, res, next) => {
     try {
+        // Custom Auth Bypass for Android Overlay (since Clerk tokens expire in 60s)
+        const overlaySecret = req.headers['x-overlay-secret'];
+        if (overlaySecret && overlaySecret === process.env.OVERLAY_SECRET_KEY) {
+            const clerkId = req.headers['x-overlay-user-id'];
+            if (!clerkId) return res.status(401).json({ error: "Missing overlay user id" });
+            
+            const user = await User.findOne({ clerkId });
+            if (!user) return res.status(401).json({ error: "User not found for overlay" });
+            
+            req.user = user;
+            req.clerkId = clerkId;
+            return next();
+        }
+
         const authHeader = req.headers.authorization;
         if (!authHeader) {
             return res.status(401).json({ error: "No auth header" });
