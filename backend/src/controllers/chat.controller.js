@@ -1055,7 +1055,7 @@ export const generateSpeech = async (req, res) => {
         const voiceId = req.body?.voiceId || req.query?.voiceId;
         if (!text) return res.status(400).json({ error: "Text is required" });
 
-        const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+        const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY || "sk_b2597de6b3935abf1af8e93c184b54ba0a8015aec4f479c9";
         if (!elevenLabsApiKey) {
             console.error("ElevenLabs API Key is missing in .env");
             return res.status(500).json({ error: "TTS Service is not configured" });
