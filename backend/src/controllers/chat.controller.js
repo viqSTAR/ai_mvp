@@ -244,7 +244,7 @@ export const chatWithAI = async (req, res) => {
     const client = getOpenAIClient();
 
     try {
-        const { messages, currentPendingAction, chatId } = req.body;
+        const { messages, currentPendingAction, chatId, isVoice } = req.body;
         const userId = req.clerkId;
 
         if (!messages || !Array.isArray(messages)) {
@@ -467,8 +467,9 @@ ${memoryContext}
         };
 
         // 3. Call OpenAI
+        const selectedModel = isVoice ? "gpt-4o-mini" : "gpt-4o";
         const completion = await client.chat.completions.create({
-            model: "gpt-4o-mini", // Use mini for vastly faster TTFB (Time To First Byte) 
+            model: selectedModel, // Fast for voice, powerful for text
             messages: [systemMessage, ...messages.slice(-10)],
             tools: tools,
             tool_choice: "auto", // Let AI decide
