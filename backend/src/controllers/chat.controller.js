@@ -1066,9 +1066,9 @@ export const generateSpeech = async (req, res) => {
         const payload = {
             inputs: [safeText],
             target_language_code: "hi-IN",
-            speaker: voiceId, // Dynamic valid Sarvam v3 speaker
+            speaker: voiceId,
             pace: 1.1,
-            speech_sample_rate: 24000,
+            speech_sample_rate: 8000, // Testing: smaller payload = faster delivery
             model: "bulbul:v3"
         };
 
