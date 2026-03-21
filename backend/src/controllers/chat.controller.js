@@ -1085,7 +1085,10 @@ export const generateSpeech = async (req, res) => {
         if (!response.ok) {
             const errorText = await response.text();
             console.error("Sarvam AI Error:", errorText);
-            return res.status(response.status).json({ error: "Failed to generate speech via Sarvam AI" });
+            return res.status(response.status).json({ 
+                error: "Failed to generate speech via Sarvam AI",
+                details: errorText 
+            });
         }
 
         const json = await response.json();
