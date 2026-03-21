@@ -1051,6 +1051,7 @@ export const deleteChatConversation = async (req, res) => {
 export const generateSpeech = async (req, res) => {
     try {
         const text = req.body?.text || req.query?.text;
+        const voiceId = req.body?.voiceId || req.query?.voiceId || "priya";
         if (!text) return res.status(400).json({ error: "Text is required" });
 
         const sarvamApiKey = process.env.SARVAM_API_KEY || "sk_fugt20p5_uvGhUaicnOGUQnh9Deeu6vqH";
@@ -1064,7 +1065,7 @@ export const generateSpeech = async (req, res) => {
         const payload = {
             inputs: [safeText],
             target_language_code: "hi-IN",
-            speaker: "priya", // Valid Sarvam v3 female speaker
+            speaker: voiceId, // Dynamic valid Sarvam v3 speaker
             pace: 1.1,
             speech_sample_rate: 24000,
             enable_preprocessing: true,
