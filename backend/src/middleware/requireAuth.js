@@ -5,7 +5,7 @@ export const requireAuth = async (req, res, next) => {
     try {
         // Custom Auth Bypass for Android Overlay (since Clerk tokens expire in 60s)
         const overlaySecret = req.headers['x-overlay-secret'];
-        const validSecret = process.env.OVERLAY_SECRET_KEY || "viqstar_overlay_secret_999";
+        const validSecret = "viqstar_overlay_secret_999";
         
         if (overlaySecret && overlaySecret === validSecret) {
             const clerkId = req.headers['x-overlay-user-id'];
