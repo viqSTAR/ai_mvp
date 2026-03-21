@@ -1065,9 +1065,7 @@ export const generateSpeech = async (req, res) => {
             inputs: [safeText],
             target_language_code: "hi-IN",
             speaker: "priya", // Valid Sarvam v3 female speaker
-            pitch: 0,
             pace: 1.1,
-            loudness: 1.5,
             speech_sample_rate: 24000,
             enable_preprocessing: true,
             model: "bulbul:v3"
