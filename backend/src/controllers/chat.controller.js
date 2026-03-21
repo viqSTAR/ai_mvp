@@ -246,6 +246,7 @@ export const chatWithAI = async (req, res) => {
     try {
         const { messages, currentPendingAction, chatId, isVoice } = req.body;
         const userId = req.clerkId;
+        console.log(`🎤 isVoice=${isVoice}, voiceId=${req.body?.voiceId}, chatId=${chatId}`);
 
         if (!messages || !Array.isArray(messages)) {
             return res.status(400).json({ success: false, error: "Messages array is required" });
@@ -309,18 +310,15 @@ export const chatWithAI = async (req, res) => {
             }
         };
 
-        const sendResponse = async (payload) => {
+        const sendResponse = async (payload, preStartedTtsPromise = null) => {
             if (generatedTitlePromise) {
                 const title = await generatedTitlePromise;
                 if (title) payload.generatedTitle = title;
             }
 
-            // ─── For voice mode: generate TTS in parallel with MongoDB save ───
-            // Both tasks start together so audio is ready by the time we respond
-            let ttsPromise = null;
-            if (isVoice && payload.message) {
-                ttsPromise = generateVoiceAudio(payload.message);
-            }
+            // Use pre-started TTS if available, otherwise start now
+            const ttsPromise = preStartedTtsPromise ||
+                (isVoice && payload.message ? generateVoiceAudio(payload.message) : null);
 
             // ─── AUTO-SAVE TO MONGO ───
             if (chatId) {
@@ -995,11 +993,14 @@ ${memoryContext}
         // Trigger background memory extraction (fire-and-forget)
         extractMemoriesFromChat(userId, messages).catch(() => { });
 
+        // ⚡ Start TTS NOW — runs in parallel with title gen + MongoDB save inside sendResponse
+        const earlyTtsPromise = isVoice ? generateVoiceAudio(aiMessage.content) : null;
+
         return await sendResponse({
             success: true,
             message: aiMessage.content,
             pendingAction: null,
-        });
+        }, earlyTtsPromise);
 
     } catch (error) {
         console.error("AI Error:", error);
