@@ -275,14 +275,54 @@ export const chatWithAI = async (req, res) => {
             }
         }
 
+        // ─── Voice TTS Helper ───
+        // Calls Sarvam and returns base64 audio string (or null on failure)
+        const generateVoiceAudio = async (text) => {
+            if (!text || !text.trim()) return null;
+            try {
+                const sarvamApiKey = process.env.SARVAM_API_KEY || "sk_fugt20p5_uvGhUaicnOGUQnh9Deeu6vqH";
+                const safeText = text.length > 490 ? text.substring(0, 490) + "..." : text;
+                const voiceIdToUse = req.body?.voiceId || "priya";
+
+                const sarvamRes = await fetch("https://api.sarvam.ai/text-to-speech", {
+                    method: "POST",
+                    headers: {
+                        "api-subscription-key": sarvamApiKey,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        inputs: [safeText],
+                        target_language_code: "hi-IN",
+                        speaker: voiceIdToUse,
+                        pace: 1.1,
+                        speech_sample_rate: 8000,
+                        model: "bulbul:v3",
+                    }),
+                });
+
+                if (!sarvamRes.ok) return null;
+                const json = await sarvamRes.json();
+                return json.audios?.[0] || null;
+            } catch (e) {
+                console.error("Inline TTS generation failed:", e.message);
+                return null;
+            }
+        };
+
         const sendResponse = async (payload) => {
             if (generatedTitlePromise) {
                 const title = await generatedTitlePromise;
                 if (title) payload.generatedTitle = title;
             }
 
+            // ─── For voice mode: generate TTS in parallel with MongoDB save ───
+            // Both tasks start together so audio is ready by the time we respond
+            let ttsPromise = null;
+            if (isVoice && payload.message) {
+                ttsPromise = generateVoiceAudio(payload.message);
+            }
+
             // ─── AUTO-SAVE TO MONGO ───
-            // If we have a chatId, we save the interaction (last user msg + AI response)
             if (chatId) {
                 try {
                     const aiMessage = {
@@ -292,7 +332,6 @@ export const chatWithAI = async (req, res) => {
                         createdAt: Date.now(),
                     };
 
-                    // Include generated file metadata if present
                     if (payload.generatedFile) {
                         aiMessage.attachments = [{
                             fileType: payload.generatedFile.type === "image" ? "image" : "document",
@@ -301,14 +340,13 @@ export const chatWithAI = async (req, res) => {
                         }];
                     }
 
-                    // Push user message (last one) and AI response to MongoDB
                     const userMsg = messages[messages.length - 1];
                     const mongoMessages = [];
                     if (userMsg) {
                         mongoMessages.push({
                             id: Date.now().toString() + "_user",
                             role: "user",
-                            text: userMsg.content || "", // handle content array if vision used? for now fallback to string
+                            text: userMsg.content || "",
                             createdAt: Date.now() - 1000,
                         });
                     }
@@ -330,6 +368,15 @@ export const chatWithAI = async (req, res) => {
                     console.log(`✅ Chat ${chatId} persisted to MongoDB`);
                 } catch (mongoErr) {
                     console.error("Failed to auto-persist chat to Mongo:", mongoErr);
+                }
+            }
+
+            // Attach audio to payload if TTS was generated
+            if (ttsPromise) {
+                const audioBase64 = await ttsPromise;
+                if (audioBase64) {
+                    payload.audioBase64 = audioBase64;
+                    console.log(`🔊 Voice audio bundled in response (${audioBase64.length} chars)`);
                 }
             }
 
