@@ -1069,7 +1069,6 @@ export const generateSpeech = async (req, res) => {
             speaker: voiceId, // Dynamic valid Sarvam v3 speaker
             pace: 1.1,
             speech_sample_rate: 24000,
-            enable_preprocessing: true,
             model: "bulbul:v3"
         };
 
