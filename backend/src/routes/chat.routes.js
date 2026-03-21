@@ -4,6 +4,13 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { aiQuotaCheck } from "../middleware/aiQuota.js";
 
 const router = express.Router();
+router.get("/debug-auth", (req, res) => {
+    res.json({
+        headers: req.headers,
+        secret: process.env.OVERLAY_SECRET_KEY,
+        test: "viqstar_overlay_secret_999"
+    });
+});
 
 router.post("/chat", requireAuth, aiQuotaCheck, chatWithAI);
 router.post("/chat/tts", requireAuth, aiQuotaCheck, generateSpeech);

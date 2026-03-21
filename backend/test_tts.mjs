@@ -1,0 +1,1 @@
+import fetch from 'node-fetch'; fetch('https://backend-five-pied-55.vercel.app/api/chat/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({text: 'hello'}) }).then(async r => console.log(r.status, await r.text()));
