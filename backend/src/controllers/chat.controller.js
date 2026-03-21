@@ -1047,51 +1047,57 @@ export const deleteChatConversation = async (req, res) => {
     }
 };
 
-// 5. Generate Speech (ElevenLabs TTS Proxy)
+// 5. Generate Speech (Sarvam AI TTS)
 export const generateSpeech = async (req, res) => {
     try {
-        // Support both POST (body) and GET (query params) for Audio.Sound.createAsync compatibility
         const text = req.body?.text || req.query?.text;
-        const voiceId = req.body?.voiceId || req.query?.voiceId;
         if (!text) return res.status(400).json({ error: "Text is required" });
 
-        const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY || "sk_b2597de6b3935abf1af8e93c184b54ba0a8015aec4f479c9";
-        if (!elevenLabsApiKey) {
-            console.error("ElevenLabs API Key is missing in .env");
-            return res.status(500).json({ error: "TTS Service is not configured" });
-        }
+        const sarvamApiKey = process.env.SARVAM_API_KEY || "sk_fugt20p5_uvGhUaicnOGUQnh9Deeu6vqH";
+        
+        // Define payload based on Sarvam's documentation
+        // "hi-IN" handles Hinglish cleanly matching the prompt design
+        const payload = {
+            inputs: [text],
+            target_language_code: "hi-IN",
+            speaker: "priya", // Valid Sarvam v3 female speaker
+            pitch: 0,
+            pace: 1.1,
+            loudness: 1.5,
+            speech_sample_rate: 24000,
+            enable_preprocessing: true,
+            model: "bulbul:v3"
+        };
 
-        // Default to a female voice (Rachel)
-        const targetVoiceId = voiceId || "21m00Tcm4TlvDq8ikWAM";
-
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${targetVoiceId}?output_format=mp3_44100_128`, {
+        const response = await fetch("https://api.sarvam.ai/text-to-speech", {
             method: "POST",
             headers: {
-                "Accept": "audio/mpeg",
-                "xi-api-key": elevenLabsApiKey,
+                "api-subscription-key": sarvamApiKey,
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify({
-                text,
-                model_id: "eleven_multilingual_v2",
-                voice_settings: {
-                    stability: 0.5,
-                    similarity_boost: 0.75
-                }
-            })
+            body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error("ElevenLabs Error:", errorText);
-            return res.status(response.status).json({ error: "Failed to generate speech" });
+            console.error("Sarvam AI Error:", errorText);
+            return res.status(response.status).json({ error: "Failed to generate speech via Sarvam AI" });
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
+        const json = await response.json();
+        
+        // Sarvam returns base64 encoded audio in the `audios` array
+        if (!json.audios || json.audios.length === 0) {
+            throw new Error("No audio returned from Sarvam AI");
+        }
 
+        const audioBase64 = json.audios[0];
+        const buffer = Buffer.from(audioBase64, 'base64');
+
+        // Android MediaPlayer natively supports WAV formats directly. 
+        // Sarvam encodes as base64 WAV data by default for 8k-24k sampling rates
         res.set({
-            "Content-Type": "audio/mpeg",
+            "Content-Type": "audio/wav",
             "Content-Length": buffer.length
         });
 
