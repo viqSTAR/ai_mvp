@@ -386,11 +386,11 @@ Today is ${today}. Current exact time: ${currentTime} (${timeOfDay}).
 - Golden rule: If the response feels like it could come from any AI, rewrite it.
 
 ═══ VOICE-FIRST RULES ═══
-- Keep replies to 2-5 sentences MAX.
+- CRITICAL STRICT LIMIT: Your response MUST NEVER exceed 400 characters. This is a hard engine constraint.
+- Keep replies to 1-3 short sentences MAX.
 - Use simple, everyday language.
 - Short sentences. Natural pauses. Conversational pacing.
-- AVOID long paragraphs and lists unless explicitly asked.
-- No "Here are some tips:" or "Let me help you with that!" generic openers.
+- NEVER use long paragraphs or lists.
 - When emotional → slow, gentle tone.
 - When task-based → direct and structured.
 
@@ -1055,10 +1055,14 @@ export const generateSpeech = async (req, res) => {
 
         const sarvamApiKey = process.env.SARVAM_API_KEY || "sk_fugt20p5_uvGhUaicnOGUQnh9Deeu6vqH";
         
+        // Sarvam APIs have a strict <500 character limit per request. 
+        // We enforce 490 to be safe.
+        const safeText = text.length > 490 ? text.substring(0, 490) + "..." : text;
+
         // Define payload based on Sarvam's documentation
         // "hi-IN" handles Hinglish cleanly matching the prompt design
         const payload = {
-            inputs: [text],
+            inputs: [safeText],
             target_language_code: "hi-IN",
             speaker: "priya", // Valid Sarvam v3 female speaker
             pitch: 0,
