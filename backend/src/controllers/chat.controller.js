@@ -937,51 +937,22 @@ ${memoryContext}
             // 5. Trigger background memory extraction (fire-and-forget)
             extractMemoriesFromChat(userId, messages).catch(() => { });
 
-            const toolResponsePayload = {
+            return await sendResponse({
                 success: true,
                 message: confirmMessage, // AI generic confirmation
                 pendingAction,
-            };
-
-            // If it's a voice mode request, bundle the TTS audio synchronously!
-            if (isVoice) {
-                try {
-                    const voiceId = req.body.voiceId || "priya";
-                    console.log(`🎙️ Synchronous TTS generation for tool confirmation voice mode (${voiceId})...`);
-                    const audioBase64 = await getSarvamAudio(confirmMessage, voiceId);
-                    toolResponsePayload.audioBase64 = audioBase64;
-                } catch (ttsErr) {
-                    console.error("Failed to generate synced tool confirmation audio:", ttsErr);
-                }
-            }
-
-            return await sendResponse(toolResponsePayload);
+            });
         }
 
         // 5. No Tool Call - Normal Response
         // Trigger background memory extraction (fire-and-forget)
         extractMemoriesFromChat(userId, messages).catch(() => { });
 
-        const responsePayload = {
+        return await sendResponse({
             success: true,
             message: aiMessage.content,
             pendingAction: null,
-        };
-
-        // If it's a voice mode request, bundle the TTS audio synchronously!
-        if (isVoice) {
-            try {
-                const voiceId = req.body.voiceId || "priya";
-                console.log(`🎙️ Synchronous TTS generation for voice mode (${voiceId})...`);
-                const audioBase64 = await getSarvamAudio(aiMessage.content, voiceId);
-                responsePayload.audioBase64 = audioBase64;
-            } catch (ttsErr) {
-                console.error("Failed to generate synced TTS audio:", ttsErr);
-                // We still return the text even if audio fails
-            }
-        }
-
-        return await sendResponse(responsePayload);
+        });
 
     } catch (error) {
         console.error("AI Error:", error);
@@ -1077,53 +1048,61 @@ export const deleteChatConversation = async (req, res) => {
     }
 };
 
-// Helper for Sarvam AI TTS logic
-const getSarvamAudio = async (text, voiceId = "priya") => {
-    const sarvamApiKey = process.env.SARVAM_API_KEY || "sk_fugt20p5_uvGhUaicnOGUQnh9Deeu6vqH";
-    const safeText = text.length > 490 ? text.substring(0, 490) + "..." : text;
-
-    const payload = {
-        inputs: [safeText],
-        target_language_code: "hi-IN",
-        speaker: voiceId,
-        pace: 1.1,
-        speech_sample_rate: 24000,
-        enable_preprocessing: true,
-        model: "bulbul:v3"
-    };
-
-    const response = await fetch("https://api.sarvam.ai/text-to-speech", {
-        method: "POST",
-        headers: {
-            "api-subscription-key": sarvamApiKey,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Sarvam AI Error (${response.status}): ${errorText}`);
-    }
-
-    const json = await response.json();
-    if (!json.audios || json.audios.length === 0) {
-        throw new Error("No audio returned from Sarvam AI");
-    }
-
-    return json.audios[0]; // Base64 string
-};
-
-// 5. Generate Speech (Sarvam AI TTS - Standard Endpoint)
+// 5. Generate Speech (Sarvam AI TTS)
 export const generateSpeech = async (req, res) => {
     try {
         const text = req.body?.text || req.query?.text;
         const voiceId = req.body?.voiceId || req.query?.voiceId || "priya";
         if (!text) return res.status(400).json({ error: "Text is required" });
 
-        const audioBase64 = await getSarvamAudio(text, voiceId);
+        const sarvamApiKey = process.env.SARVAM_API_KEY || "sk_fugt20p5_uvGhUaicnOGUQnh9Deeu6vqH";
+        
+        // Sarvam APIs have a strict <500 character limit per request. 
+        // We enforce 490 to be safe.
+        const safeText = text.length > 490 ? text.substring(0, 490) + "..." : text;
+
+        // Define payload based on Sarvam's documentation
+        // "hi-IN" handles Hinglish cleanly matching the prompt design
+        const payload = {
+            inputs: [safeText],
+            target_language_code: "hi-IN",
+            speaker: voiceId, // Dynamic valid Sarvam v3 speaker
+            pace: 1.1,
+            speech_sample_rate: 24000,
+            enable_preprocessing: true,
+            model: "bulbul:v3"
+        };
+
+        const response = await fetch("https://api.sarvam.ai/text-to-speech", {
+            method: "POST",
+            headers: {
+                "api-subscription-key": sarvamApiKey,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("Sarvam AI Error:", errorText);
+            return res.status(response.status).json({ 
+                error: "Failed to generate speech via Sarvam AI",
+                details: errorText 
+            });
+        }
+
+        const json = await response.json();
+        
+        // Sarvam returns base64 encoded audio in the `audios` array
+        if (!json.audios || json.audios.length === 0) {
+            throw new Error("No audio returned from Sarvam AI");
+        }
+
+        const audioBase64 = json.audios[0];
         const buffer = Buffer.from(audioBase64, 'base64');
 
+        // Android MediaPlayer natively supports WAV formats directly. 
+        // Sarvam encodes as base64 WAV data by default for 8k-24k sampling rates
         res.set({
             "Content-Type": "audio/wav",
             "Content-Length": buffer.length
@@ -1132,6 +1111,6 @@ export const generateSpeech = async (req, res) => {
         res.send(buffer);
     } catch (error) {
         console.error("Generate Speech Error:", error);
-        res.status(500).json({ error: "Failed to generate speech", details: error.message });
+        res.status(500).json({ error: "Failed to generate speech" });
     }
 };
