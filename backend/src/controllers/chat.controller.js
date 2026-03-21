@@ -468,7 +468,7 @@ ${memoryContext}
 
         // 3. Call OpenAI
         const completion = await client.chat.completions.create({
-            model: "gpt-4o", // Use a smart model for tools
+            model: "gpt-4o-mini", // Use mini for vastly faster TTFB (Time To First Byte) 
             messages: [systemMessage, ...messages.slice(-10)],
             tools: tools,
             tool_choice: "auto", // Let AI decide
