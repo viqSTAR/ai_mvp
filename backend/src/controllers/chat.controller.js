@@ -7,6 +7,17 @@ import { generatePDF, generateDOCX, generatePPTX, generateImage } from "../servi
 
 let openai = null;
 
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+};
+
 // Initialise OpenAI client if not already done
 const getOpenAIClient = () => {
     if (!openai) {
@@ -23,15 +34,21 @@ const tools = [
         type: "function",
         function: {
             name: "create_reminder",
-            description: "Create a one-time reminder for a specific date and time.",
+            description: "Create a one-time reminder/task/todo/checklist item for a specific date and time.",
             parameters: {
                 type: "object",
                 properties: {
                     title: { type: "string", description: "The content of the reminder (e.g., 'Call Mom')" },
                     time: { type: "string", description: "Time in 'h:mm AM/PM' format (e.g., '5:00 PM'). Default to '9:00 AM' if not specified." },
                     date: { type: "string", description: "Date in 'YYYY-MM-DD' format (e.g., '2026-02-09'). Default to today if not specified." },
+                    stages: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional checklist/stages for task lists. Use when user says todo list, checklist, or multiple items like 'buy milk, eggs'.",
+                    },
                     alarmEnabled: { type: "boolean", description: "Set to true ONLY if the user explicitly asks for an 'alarm'." },
-                    notificationEnabled: { type: "boolean", description: "Set to true if the user asks for a 'notification' or just says 'remind me'." }
+                    notificationEnabled: { type: "boolean", description: "Set to true if the user asks for a 'notification' or just says 'remind me'." },
+                    aiNotificationBody: { type: "string", description: "A unique, friendly, motivating notification text for this specific task (max 80 chars), e.g. 'Have you finished your leg day? 💪 Let's crush it!'" }
                 },
                 required: ["title"],
             },
@@ -55,7 +72,8 @@ const tools = [
                     },
                     icon: { type: "string", description: "Icon name (e.g., 'fitness-outline', 'book-outline')." },
                     alarmEnabled: { type: "boolean", description: "Set to true ONLY if the user explicitly asks for an 'alarm'." },
-                    notificationEnabled: { type: "boolean", description: "Set to true if the user asks for a 'notification' or 'reminder'." }
+                    notificationEnabled: { type: "boolean", description: "Set to true if the user asks for a 'notification' or 'reminder'." },
+                    aiNotificationBody: { type: "string", description: "A unique, friendly, motivating notification text for this specific routine (max 80 chars)." }
                 },
                 required: ["title"],
             },
@@ -127,6 +145,61 @@ const tools = [
                     type: { type: "string", enum: ["reminder", "routine"], description: "The type of item." },
                 },
                 required: ["id", "type"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "set_timer",
+            description: "Set a countdown timer when the user asks.",
+            parameters: {
+                type: "object",
+                properties: {
+                    hours: { type: "number", description: "Hours for the timer (default 0)" },
+                    minutes: { type: "number", description: "Minutes for the timer (default 0)" },
+                    seconds: { type: "number", description: "Seconds for the timer (default 0)" },
+                },
+                required: ["minutes"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "stop_timer",
+            description: "Stop the actively running timer.",
+            parameters: { type: "object", properties: {}, required: [] },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "start_stopwatch",
+            description: "Start the stopwatch when the user asks.",
+            parameters: { type: "object", properties: {}, required: [] },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "stop_stopwatch",
+            description: "Stop the actively running stopwatch.",
+            parameters: { type: "object", properties: {}, required: [] },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "add_stage",
+            description: "Add a sub-task or stage to an existing reminder (e.g. adding items to a shopping list, steps to a workout).",
+            parameters: {
+                type: "object",
+                properties: {
+                    reminderTitle: { type: "string", description: "The title of the reminder the stage belongs to (e.g. 'Shopping', 'Leg day')" },
+                    stageTitle: { type: "string", description: "The item or step to add (e.g. 'buy eggs', 'squats')" },
+                },
+                required: ["reminderTitle", "stageTitle"],
             },
         },
     },
@@ -285,7 +358,7 @@ export const chatWithAI = async (req, res) => {
                 const safeText = text.length > 490 ? text.substring(0, 490) + "..." : text;
                 const voiceIdToUse = req.body?.voiceId || "priya";
 
-                const sarvamRes = await fetch("https://api.sarvam.ai/text-to-speech", {
+                const sarvamRes = await fetchWithTimeout("https://api.sarvam.ai/text-to-speech", {
                     method: "POST",
                     headers: {
                         "api-subscription-key": sarvamApiKey,
@@ -296,29 +369,38 @@ export const chatWithAI = async (req, res) => {
                         target_language_code: "hi-IN",
                         speaker: voiceIdToUse,
                         pace: 1.1,
-                        speech_sample_rate: 8000,
+                        speech_sample_rate: 24000,
                         model: "bulbul:v3",
                     }),
-                });
+                }, 8000);
 
-                if (!sarvamRes.ok) return null;
+                if (!sarvamRes.ok) {
+                    const errText = await sarvamRes.text();
+                    console.error("[TTS inline] Sarvam error:", errText);
+                    return null;
+                }
                 const json = await sarvamRes.json();
                 return json.audios?.[0] || null;
             } catch (e) {
+                if (e?.name === "AbortError") {
+                    console.error("Inline TTS generation timed out");
+                    return null;
+                }
                 console.error("Inline TTS generation failed:", e.message);
                 return null;
             }
         };
 
         const sendResponse = async (payload, preStartedTtsPromise = null) => {
+            // ─── FIRE TTS IMMEDIATELY in parallel with everything else ───
+            const ttsPromise = preStartedTtsPromise ||
+                (isVoice && payload.message ? generateVoiceAudio(payload.message) : null);
+
+            // Run title + mongo save while TTS is already generating in background
             if (generatedTitlePromise) {
                 const title = await generatedTitlePromise;
                 if (title) payload.generatedTitle = title;
             }
-
-            // Use pre-started TTS if available, otherwise start now
-            const ttsPromise = preStartedTtsPromise ||
-                (isVoice && payload.message ? generateVoiceAudio(payload.message) : null);
 
             // ─── AUTO-SAVE TO MONGO ───
             if (chatId) {
@@ -369,7 +451,7 @@ export const chatWithAI = async (req, res) => {
                 }
             }
 
-            // Attach audio to payload if TTS was generated
+            // By now TTS has been generating the whole time — just grab the result
             if (ttsPromise) {
                 const audioBase64 = await ttsPromise;
                 if (audioBase64) {
@@ -465,7 +547,17 @@ Today is ${today}. Current exact time: ${currentTime} (${timeOfDay}).
 ═══ SCHEDULE TOOLS ═══
 ${scheduleContext}
 
-- Use the provided tools to create, update, or delete reminders and routines.
+- CRITICAL: Use the provided tools (functions) to create, update, or delete reminders and routines. NEVER just write text saying "I added this to your list" — you MUST actually execute the JSON tool call!
+- If user says "task", "todo", "to-do", "checklist", "list banana", "kaam", "shopping list" and asks to create/add/manage it, treat it as reminder workflow:
+    • one-time/date-specific -> use 'create_reminder'
+    • recurring (daily/weekly/every day) -> use 'create_routine'
+- If user gives multiple task items, put them in 'stages' while creating reminder. CRITICAL: If the user refers to items from a PREVIOUS message (e.g. "these things", "that list", "the ingredients"), you MUST read the conversation history, extract the actual specific items they mean, and put them in the 'stages' array. NEVER use conversational pronouns like "these things" as a title.
+- If user asks to create a reminder/task/todo but does NOT specify a clear time, ask a follow-up question for time first. Do NOT create it yet.
+- If the user asks for a timer (e.g. "set a 10 min timer"), use the 'set_timer' tool.
+- If the user asks to stop a timer, use the 'stop_timer' tool.
+- If the user asks to start a stopwatch, use the 'start_stopwatch' tool.
+- If the user asks to stop a stopwatch, use the 'stop_stopwatch' tool.
+- If the user asks to add an item or stage to an existing task (e.g. "add eggs to shopping"), use the 'add_stage' tool.
 - RELATIVE TIME: When user says "in X minutes" or "in X hours", calculate the exact time from the current time above. Example: if current time is 1:10 AM and user says "in 2 minutes", set time to "1:12 AM".
 - CRITICAL ALARM RULE (applies to BOTH create AND update):
   • If user says "alarm" or "wake up" or "change to alarm" → ALWAYS set alarmEnabled=true AND notificationEnabled=false
@@ -521,7 +613,50 @@ ${memoryContext}
         });
 
         const choice = completion.choices[0];
-        const aiMessage = choice.message;
+        let aiMessage = choice.message;
+
+        // Keep a normalized copy of the latest user text for local fallback handling.
+        const latestRawContent = messages[messages.length - 1]?.content ?? messages[messages.length - 1]?.text ?? "";
+        const latestUserText = String(
+            Array.isArray(latestRawContent)
+                ? latestRawContent
+                    .map((part) => (typeof part === "string" ? part : part?.text || ""))
+                    .join(" ")
+                : latestRawContent
+        ).toLowerCase();
+
+        const splitStageCandidates = (text = "") => {
+            return text
+                .split(/,|\band\b|\&|\n/gi)
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0)
+                .map((s) => s.replace(/^[\-•\d\.\)\s]+/, "").trim())
+                .filter((s) => s.length > 1);
+        };
+
+        const inferStageTitles = (title = "", userText = "") => {
+            const titleText = String(title || "");
+            const userTextRaw = String(userText || "");
+
+            const fromStagesPhrase =
+                userTextRaw.match(/(?:with\s+stages?|with\s+items?|ingredients\s+like|items\s+like|like)\s+(.+)$/i)?.[1] ||
+                titleText.match(/(?:with\s+stages?|with\s+items?|ingredients\s+like|items\s+like|like)\s+(.+)$/i)?.[1] ||
+                "";
+
+            const fromColon =
+                (userTextRaw.includes(":") ? userTextRaw.split(":").slice(1).join(":") : "") ||
+                (titleText.includes(":") ? titleText.split(":").slice(1).join(":") : "");
+
+            const candidates = fromStagesPhrase || fromColon;
+            if (!candidates) return [];
+
+            const stageTitles = splitStageCandidates(candidates)
+                .map((s) => s.replace(/^(i\s+will\s+buy|buy|have\s+to\s+buy)\s+/i, "").trim())
+                .filter(Boolean);
+
+            return stageTitles.length >= 2 ? stageTitles : [];
+        };
+        const likelyScheduleIntent = /(\btodo\b|\bto-do\b|\btask\b|\btasks\b|\bchecklist\b|shopping list|\broutine\b|\bhabit\b|remind me|\breminder\b|yaad|har din|\broz\b|every day|daily|weekly|add .*\b(stage|step|item)\b)/i.test(latestUserText);
 
         // 4. Handle Tool Calls
         if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
@@ -535,6 +670,23 @@ ${memoryContext}
 
             // Map tool calls to pendingAction structure
             if (functionName === "create_reminder") {
+                const hasExplicitTime = typeof args.time === "string" && args.time.trim().length > 0;
+                if (!hasExplicitTime) {
+                    return await sendResponse({
+                        success: true,
+                        message: `What time should I set for "${args.title}"?`,
+                        pendingAction: null,
+                    });
+                }
+
+                // If model forgets to send stages for todo/checklist phrasing, infer them deterministically.
+                if (!Array.isArray(args.stages) || args.stages.length === 0) {
+                    const inferred = inferStageTitles(args.title, latestUserText);
+                    if (inferred.length > 0) {
+                        args.stages = inferred;
+                    }
+                }
+
                 if (args.alarmEnabled === undefined && args.notificationEnabled === undefined) {
                     args.notificationEnabled = true;
                     args.alarmEnabled = false;
@@ -568,6 +720,16 @@ ${memoryContext}
                         if (item) pendingAction = { type: "view_routine", data: item };
                     }
                 }
+            } else if (functionName === "set_timer") {
+                pendingAction = { type: "set_timer", data: args };
+            } else if (functionName === "stop_timer") {
+                pendingAction = { type: "stop_timer", data: args };
+            } else if (functionName === "start_stopwatch") {
+                pendingAction = { type: "start_stopwatch", data: args };
+            } else if (functionName === "stop_stopwatch") {
+                pendingAction = { type: "stop_stopwatch", data: args };
+            } else if (functionName === "add_stage") {
+                pendingAction = { type: "add_stage", data: args };
             }
             // ─── Memory Management via Chat ───
             else if (functionName === "save_memory") {
@@ -977,6 +1139,44 @@ ${memoryContext}
                     `Found it! Here's "${title}" for you.`,
                     `"${title}" — here you go. 📋`,
                 ]);
+            } else if (functionName === "set_timer") {
+                const h = args.hours || 0;
+                const m = args.minutes || 0;
+                const s = args.seconds || 0;
+                const timeStrs = [];
+                if (h > 0) timeStrs.push(`${h} hour${h > 1 ? 's' : ''}`);
+                if (m > 0) timeStrs.push(`${m} minute${m > 1 ? 's' : ''}`);
+                if (s > 0) timeStrs.push(`${s} second${s > 1 ? 's' : ''}`);
+                const duration = timeStrs.join(" and ") || "0 seconds";
+                confirmMessage = pick([
+                    `Timer set for ${duration}. I'll let you know when time's up! ⏳`,
+                    `Got it, starting a timer for ${duration}.`,
+                    `Clock is ticking! Timer set for ${duration}. ⏱️`
+                ]);
+            } else if (functionName === "stop_timer") {
+                confirmMessage = pick([
+                    `Timer stopped. 멈춰!`,
+                    `I've stopped the timer for you.`,
+                    `Timer paused!`
+                ]);
+            } else if (functionName === "start_stopwatch") {
+                confirmMessage = pick([
+                    `Stopwatch started! Let's see how long this takes. ⏱️`,
+                    `And we're off! Stopwatch is running.`,
+                    `Stopwatch is counting up now!`
+                ]);
+            } else if (functionName === "stop_stopwatch") {
+                confirmMessage = pick([
+                    `Stopwatch stopped!`,
+                    `Time's frozen. Stopwatch paused.`,
+                    `I've stopped the stopwatch.`
+                ]);
+            } else if (functionName === "add_stage") {
+                confirmMessage = pick([
+                    `Added "${args.stageTitle}" to your list. ✅`,
+                    `Got it, "${args.stageTitle}" is now a step.`,
+                    `"${args.stageTitle}" has been added! Keep going.`
+                ]);
             }
 
             // 5. Trigger background memory extraction (fire-and-forget)
@@ -989,7 +1189,83 @@ ${memoryContext}
             });
         }
 
-        // 5. No Tool Call - Normal Response
+        // 5. Fallback schedule handling when user clearly asked for tasks/todos but no tool call was emitted.
+        if ((!aiMessage.tool_calls || aiMessage.tool_calls.length === 0) && likelyScheduleIntent) {
+            const cleanTitle = latestUserText
+                .replace(/^(please\s+)?(create|make|set|add|track|note)\s+/i, "")
+                .replace(/\b(todo|to-do|task|tasks|checklist|reminder|routine|habit|list)\b/gi, "")
+                .replace(/\b(for|to|me|my|a|an|the)\b/gi, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            const isRoutineFallback = /(daily|every day|everyday|weekly|weekdays|weekends|every\s+(mon|tue|wed|thu|fri|sat|sun)|har din|roz|routine|habit)/i.test(latestUserText);
+            const addStageMatch = latestUserText.match(/(?:add|include|put)\s+(.+?)\s+(?:to|into|in)\s+(.+)/i);
+
+            let pendingAction = null;
+            let confirmMessage = "";
+
+            if (addStageMatch) {
+                pendingAction = {
+                    type: "add_stage",
+                    data: {
+                        stageTitle: addStageMatch[1].trim(),
+                        reminderTitle: addStageMatch[2].trim(),
+                    },
+                };
+                confirmMessage = `Added \"${addStageMatch[1].trim()}\" to your list. ✅`;
+            } else if (isRoutineFallback) {
+                pendingAction = {
+                    type: "create_routine",
+                    data: {
+                        title: cleanTitle || "Daily task",
+                        repeat: "daily",
+                        selectedDays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                        icon: "time-outline",
+                        alarmEnabled: false,
+                        notificationEnabled: true,
+                    },
+                };
+                confirmMessage = `Done, I set \"${pendingAction.data.title}\" as a routine. ✨`;
+            } else {
+                const afterColon = latestUserText.includes(":") ? latestUserText.split(":").slice(1).join(":") : "";
+                const stageCandidates = afterColon
+                    ? afterColon.split(/,|\band\b|\&/i).map((s) => s.trim()).filter(Boolean)
+                    : [];
+
+                const hasTimeInUtterance = /\b\d{1,2}(:\d{2})?\s?(am|pm)\b|\bin\s+\d+\s+(minute|minutes|hour|hours)\b|\b(morning|afternoon|evening|night|tonight)\b/i.test(latestUserText);
+
+                if (!hasTimeInUtterance) {
+                    extractMemoriesFromChat(userId, messages).catch(() => { });
+                    return await sendResponse({
+                        success: true,
+                        message: `Got it. What time should I set for \"${cleanTitle || "this task"}\"?`,
+                        pendingAction: null,
+                    });
+                }
+
+                pendingAction = {
+                    type: "create_reminder",
+                    data: {
+                        title: cleanTitle || "New task",
+                        ...(stageCandidates.length > 1 ? {
+                            stages: stageCandidates.map((title, i) => ({ id: `stage_${Date.now()}_${i}`, title, completed: false }))
+                        } : {}),
+                        alarmEnabled: false,
+                        notificationEnabled: true,
+                    },
+                };
+                confirmMessage = `Got it, I created \"${pendingAction.data.title}\" in your tasks. ✅`;
+            }
+
+            extractMemoriesFromChat(userId, messages).catch(() => { });
+            return await sendResponse({
+                success: true,
+                message: confirmMessage,
+                pendingAction,
+            });
+        }
+
+        // 6. No Tool Call - Normal Response
         // Trigger background memory extraction (fire-and-forget)
         extractMemoriesFromChat(userId, messages).catch(() => { });
 
@@ -1116,18 +1392,18 @@ export const generateSpeech = async (req, res) => {
             target_language_code: "hi-IN",
             speaker: voiceId,
             pace: 1.1,
-            speech_sample_rate: 8000, // Testing: smaller payload = faster delivery
+            speech_sample_rate: 24000, // Standard payload size avoids playback corruption
             model: "bulbul:v3"
         };
 
-        const response = await fetch("https://api.sarvam.ai/text-to-speech", {
+        const response = await fetchWithTimeout("https://api.sarvam.ai/text-to-speech", {
             method: "POST",
             headers: {
                 "api-subscription-key": sarvamApiKey,
                 "Content-Type": "application/json"
             },
             body: JSON.stringify(payload)
-        });
+        }, 8000);
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -1157,6 +1433,9 @@ export const generateSpeech = async (req, res) => {
 
         res.send(buffer);
     } catch (error) {
+        if (error?.name === "AbortError") {
+            return res.status(504).json({ error: "TTS request timed out" });
+        }
         console.error("Generate Speech Error:", error);
         res.status(500).json({ error: "Failed to generate speech" });
     }
