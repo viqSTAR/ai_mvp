@@ -1,4 +1,4 @@
-const DAILY_FREE_LIMIT = 100; // change anytime
+const DAILY_FREE_LIMIT = 10000; // change anytime
 
 export const aiQuotaCheck = async (req, res, next) => {
     const user = req.user;

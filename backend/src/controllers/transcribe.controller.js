@@ -1,5 +1,4 @@
-import fs from "fs";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 
 export const transcribeAudio = async (req, res) => {
     try {
@@ -8,20 +7,15 @@ export const transcribeAudio = async (req, res) => {
             apiKey: process.env.OPENAI_API_KEY,
         });
 
-        if (!req.file) {
+        if (!req.file || !req.file.buffer) {
             return res.status(400).json({ error: "No audio file provided" });
         }
 
-        const filePath = req.file.path;
-        const newFilePath = `${filePath}.m4a`;
-
-        // Rename file to have extension so OpenAI recognizes it
-        fs.renameSync(filePath, newFilePath);
-
         try {
-            // Transcribe using OpenAI Whisper
+            // Transcribe using OpenAI Whisper directly from buffer
+            const file = await toFile(req.file.buffer, "audio.m4a", { type: req.file.mimetype || "audio/m4a" });
             const transcription = await openai.audio.transcriptions.create({
-                file: fs.createReadStream(newFilePath),
+                file: file,
                 model: "whisper-1",
                 language: "en", // Forces roman script output (kaise ho, not कैसे हो)
                 prompt: "This is a voice command to an AI assistant app. The user speaks in English and Hindi (Hinglish). Common phrases: set alarm, set reminder, remind me, task, tasks, todo, to-do, checklist, create task, shopping list, add item, add stage, routine, schedule, wake me up, snooze, delete, update, in two minutes, tomorrow morning, yaad rakhna, bhool jao, kaise ho, kya haal hai, mujhe yaad dilao.",
@@ -47,14 +41,15 @@ export const transcribeAudio = async (req, res) => {
             }
 
             res.json({ text });
-        } finally {
-            // Cleanup: Delete the temp file
-            fs.unlink(newFilePath, (err) => {
-                if (err) console.error("Error deleting temp file:", err);
-            });
+        } catch (error) {
+            if (error.status === 400 && error.message?.includes("Audio length")) {
+                // Audio was too short, likely just background noise from continuous listener
+                return res.json({ text: "" });
+            }
+            throw error;
         }
     } catch (error) {
         console.error("Transcription Error:", error);
-        res.status(500).json({ error: "Failed to transcribe audio" });
+        res.status(500).json({ error: "Failed to transcribe audio", message: error.message });
     }
 };

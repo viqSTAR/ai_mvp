@@ -3,10 +3,11 @@ import multer from "multer";
 import { transcribeAudio } from "../controllers/transcribe.controller.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 
-import os from "os";
-
 const router = express.Router();
-const upload = multer({ dest: os.tmpdir() }); // Use OS temp dir (works on Vercel)
+
+// Use memory storage for serverless environments (Vercel) to avoid disk issues
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
 // POST /api/transcribe
 router.post("/", requireAuth, upload.single("audio"), transcribeAudio);
