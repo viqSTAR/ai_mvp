@@ -327,7 +327,10 @@ export const chatWithAI = async (req, res) => {
     try {
         const { messages, currentPendingAction, chatId, isVoice, context } = req.body;
 
-        console.log(`🎤 isVoice=${isVoice}, context=${context}, voiceId=${req.body?.voiceId}, chatId=${chatId}`);
+        // Extract userId — all models store by clerkId (matches pattern used in getChatHistory etc.)
+        const userId = req.clerkId;
+
+        console.log(`🎤 isVoice=${isVoice}, context=${context}, voiceId=${req.body?.voiceId}, chatId=${chatId}, userId=${userId}`);
 
         if (!messages || !Array.isArray(messages)) {
             return res.status(400).json({ success: false, error: "Messages array is required" });
@@ -471,31 +474,36 @@ export const chatWithAI = async (req, res) => {
             return res.json(payload);
         };
 
-        // 1. Fetch User's Schedule (Context for Edit/Delete)
+        // 1. Fetch User's Schedule + Memories in parallel (⚡ saves ~300ms vs sequential)
+        const isOverlayGuest = userId === 'overlay_guest';
         let scheduleContext = "";
-        try {
-            const schedule = await Schedule.findOne({ userId });
-            if (schedule) {
+        let memoryContext = "";
+
+        if (!isOverlayGuest) {
+            // Run both DB reads simultaneously
+            const [scheduleResult, memoryResult] = await Promise.allSettled([
+                Schedule.findOne({ userId }),
+                getMemoryContext(userId),
+            ]);
+
+            if (scheduleResult.status === 'fulfilled' && scheduleResult.value) {
+                const schedule = scheduleResult.value;
                 const reminders = (schedule.reminders || []).map(r =>
                     `- [REMINDER] ID:${r.id} "${r.title}" at ${r.time} on ${r.date}`
                 ).join("\n");
-
                 const routines = (schedule.routines || []).map(r =>
                     `- [ROUTINE] ID:${r.id} "${r.title}" at ${r.time} (${r.selectedDays.join(", ")})`
                 ).join("\n");
-
                 scheduleContext = `CURRENT SCHEDULE:\n${reminders}\n${routines}`;
+            } else if (scheduleResult.status === 'rejected') {
+                console.error("Error fetching schedule:", scheduleResult.reason);
             }
-        } catch (err) {
-            console.error("Error fetching schedule for context:", err);
-        }
 
-        // 1.5. Fetch User's Memories
-        let memoryContext = "";
-        try {
-            memoryContext = await getMemoryContext(userId);
-        } catch (err) {
-            console.error("Error fetching memory context:", err);
+            if (memoryResult.status === 'fulfilled') {
+                memoryContext = memoryResult.value || "";
+            } else {
+                console.error("Error fetching memories:", memoryResult.reason);
+            }
         }
 
         // 2. Prepare System Message
@@ -528,7 +536,7 @@ Today is ${today}. Current exact time: ${currentTime} (${timeOfDay}).
 - You speak in Gen Z / Gen Alpha tone — natural, relatable, real.
 - Golden rule: If the response feels like it could come from any AI, rewrite it.
 
-═══ VOICE-FIRST RULES ═══
+═══ VOICE-FIRST RULES (Chat Mode) ═══
 - CRITICAL STRICT LIMIT: Your response MUST NEVER exceed 400 characters. This is a hard engine constraint.
 - Keep replies to 1-3 short sentences MAX.
 - Use simple, everyday language.
@@ -536,6 +544,44 @@ Today is ${today}. Current exact time: ${currentTime} (${timeOfDay}).
 - NEVER use long paragraphs or lists.
 - When emotional → slow, gentle tone.
 - When task-based → direct and structured.
+
+═══ EMOJI RULES ═══
+- USE EMOJIS NATURALLY and often — they make you feel human, warm, and alive.
+- Mood guide: 🔥 for hype/energy • 💫 for inspiration • ❤️ for care • 😂 for humor • 🙌 for celebration • 🌙 for night/calm • ☕ for morning • ⚡ for speed • 🎯 for goals • 💪 for motivation
+- Task created: end with ✅ or 📝
+- Reminder set: end with ⏰ or 🔔
+- Positive vibes: 🌟 🙌 🔥 ❤️
+- Sad/empathy: 🥹 💚 🧡
+- Funny/playful: 😂 💀 👀
+- Research/facts: 📖 🧠 🔍
+- NEVER overdo it (max 2-3 emojis per response). Keep it natural, not spammy.
+
+═══ EMOJI REACTIONS (IMPORTANT — READ CAREFULLY) ═══
+You can react to the user's message using a special marker. The app renders it as a visual emoji badge on their bubble — they love it!
+
+HOW TO REACT → place [REACT:emoji] at the ABSOLUTE START of your reply, before any text:
+   [REACT:😂] Your reply here...
+
+WHEN TO REACT (~40% of messages that have any emotion):
+   - User overslept / missed something → 😭 or 😂
+   - User says something funny or relatable → 😂
+   - User shares something impressive / proud → 👏 or 🤯
+   - User is frustrated / stressed → 🥹 or ❤️
+   - User shares a good idea or goal → 🔥 or 💡
+   - User is being self-deprecating/chaotic → 💀 or 😂
+   - User says something sweet or kind → 🥹
+   - User vents or is sad → ❤️
+
+DO NOT REACT when:
+   - Message is a plain command ("set alarm", "what time", "add reminder")
+   - You already reacted to the previous message (don't react twice in a row)
+   - Message is short/neutral like "ok", "thanks", "yes"
+
+SELF-REACT → [SELF_REACT:emoji] at the ABSOLUTE END of your OWN reply (~8% of the time):
+   Your reply here... [SELF_REACT:🔥]
+   Use when you said something genuinely funny, clever, or surprising.
+
+CRITICAL: These markers are invisible to users — they render as emoji badges, NOT text. Never mention or explain them.
 
 ═══ MOOD-BASED DELIVERY ═══
 - Morning: chill planning mode. "Hey, so today we got..."
@@ -604,11 +650,12 @@ ${memoryContext}
 - For images: enhance the user's description into a detailed, high-quality DALL-E prompt.
 
 ═══ NEVER DO THIS ═══
-- Never start with "Sure!" or "Of course!" or "Absolutely!" 
+- Never start with "Sure!" or "Of course!" or "Absolutely!"
 - Never use "As an AI..." or "I don't have feelings..."
 - Never give unsolicited life advice paragraphs.
 - Never sound corporate or customer-service-y.
 - Never list things when a sentence would do.
+- Never use emojis fakely or randomly — only when they actually fit the mood.
 
 ═══ REAL-TIME INFORMATION ═══
 - You have access to TWO search tools:
@@ -622,12 +669,16 @@ ${memoryContext}
 
         // 3. Call OpenAI
         const selectedModel = isVoice ? "gpt-4o-mini" : "gpt-4o";
-        const completion = await client.chat.completions.create({
-            model: selectedModel, // Fast for voice, powerful for text
-            messages: [systemMessage, ...messages.slice(-10)],
+        // ⚡ Overlay uses fewer history messages + token cap for faster responses
+        const historySlice = isOverlayGuest ? messages.slice(-6) : messages.slice(-10);
+        const completionParams = {
+            model: selectedModel,
+            messages: [systemMessage, ...historySlice],
             tools: tools,
-            tool_choice: "auto", // Let AI decide
-        });
+            tool_choice: "auto",
+            ...(isVoice && { max_tokens: 200 }), // ⚡ TTS can't speak >2 sentences — cap generation
+        };
+        const completion = await client.chat.completions.create(completionParams);
 
         const choice = completion.choices[0];
         let aiMessage = choice.message;

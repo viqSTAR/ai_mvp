@@ -11,6 +11,19 @@ export const requireAuth = async (req, res, next) => {
             const clerkId = req.headers['x-overlay-user-id'];
             if (!clerkId) return res.status(401).json({ error: "Missing overlay user id" });
             
+            // Handle anonymous overlay_guest (used when widget is tapped before app login)
+            if (clerkId === 'overlay_guest') {
+                req.user = {
+                    _id: 'overlay_guest',
+                    clerkId: 'overlay_guest',
+                    dailyAiCount: 0,
+                    lastAiReset: new Date(),
+                    save: async () => {},
+                };
+                req.clerkId = 'overlay_guest';
+                return next();
+            }
+
             const user = await User.findOne({ clerkId });
             if (!user) return res.status(401).json({ error: "User not found for overlay" });
             
