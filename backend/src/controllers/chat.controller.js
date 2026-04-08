@@ -191,6 +191,14 @@ const tools = [
     {
         type: "function",
         function: {
+            name: "lap_stopwatch",
+            description: "Record a lap on the running stopwatch when the user says 'lap'.",
+            parameters: { type: "object", properties: {}, required: [] },
+        },
+    },
+    {
+        type: "function",
+        function: {
             name: "add_stage",
             description: "Add a sub-task or stage to an existing reminder (e.g. adding items to a shopping list, steps to a workout).",
             parameters: {
@@ -317,9 +325,9 @@ export const chatWithAI = async (req, res) => {
     const client = getOpenAIClient();
 
     try {
-        const { messages, currentPendingAction, chatId, isVoice } = req.body;
-        const userId = req.clerkId;
-        console.log(`🎤 isVoice=${isVoice}, voiceId=${req.body?.voiceId}, chatId=${chatId}`);
+        const { messages, currentPendingAction, chatId, isVoice, context } = req.body;
+
+        console.log(`🎤 isVoice=${isVoice}, context=${context}, voiceId=${req.body?.voiceId}, chatId=${chatId}`);
 
         if (!messages || !Array.isArray(messages)) {
             return res.status(400).json({ success: false, error: "Messages array is required" });
@@ -394,7 +402,7 @@ export const chatWithAI = async (req, res) => {
         const sendResponse = async (payload, preStartedTtsPromise = null) => {
             // ─── FIRE TTS IMMEDIATELY in parallel with everything else ───
             const ttsPromise = preStartedTtsPromise ||
-                (isVoice && payload.message ? generateVoiceAudio(payload.message) : null);
+                (isVoice && context !== "timer_only" && payload.message ? generateVoiceAudio(payload.message) : null);
 
             // Run title + mongo save while TTS is already generating in background
             if (generatedTitlePromise) {
@@ -498,9 +506,17 @@ export const chatWithAI = async (req, res) => {
         const currentTime = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
         const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "night";
 
+        let systemContentBlock = `You are a voice-first AI companion designed to support daily life. You are NOT a generic chatbot — you are a reliable presence that stays with the user through the day.`;
+        if (context === "timer_only") {
+            systemContentBlock = `You are a strictly constrained Timer & Stopwatch command operator.
+Your ONLY job is to listen to the user’s voice command and trigger the correct timer or stopwatch tool.
+Do NOT engage in general conversation. Do NOT answer questions. Do NOT make jokes.
+Do NOT output more than 2-4 words of acknowledgment (e.g., "Timer started.", "Lap recorded.").`;
+        }
+
         const systemMessage = {
             role: "system",
-            content: `You are a voice-first AI companion designed to support daily life. You are NOT a generic chatbot — you are a reliable presence that stays with the user through the day.
+            content: `${systemContentBlock}
 
 Today is ${today}. Current exact time: ${currentTime} (${timeOfDay}).
 
@@ -557,6 +573,7 @@ ${scheduleContext}
 - If the user asks to stop a timer, use the 'stop_timer' tool.
 - If the user asks to start a stopwatch, use the 'start_stopwatch' tool.
 - If the user asks to stop a stopwatch, use the 'stop_stopwatch' tool.
+- If the user says 'lap' or 'record a lap' while a stopwatch is contextually running, use the 'lap_stopwatch' tool.
 - If the user asks to add an item or stage to an existing task (e.g. "add eggs to shopping"), use the 'add_stage' tool.
 - RELATIVE TIME: When user says "in X minutes" or "in X hours", calculate the exact time from the current time above. Example: if current time is 1:10 AM and user says "in 2 minutes", set time to "1:12 AM".
 - CRITICAL ALARM RULE (applies to BOTH create AND update):
@@ -728,6 +745,8 @@ ${memoryContext}
                 pendingAction = { type: "start_stopwatch", data: args };
             } else if (functionName === "stop_stopwatch") {
                 pendingAction = { type: "stop_stopwatch", data: args };
+            } else if (functionName === "lap_stopwatch") {
+                pendingAction = { type: "lap_stopwatch", data: args };
             } else if (functionName === "add_stage") {
                 pendingAction = { type: "add_stage", data: args };
             }
@@ -1170,6 +1189,12 @@ ${memoryContext}
                     `Stopwatch stopped!`,
                     `Time's frozen. Stopwatch paused.`,
                     `I've stopped the stopwatch.`
+                ]);
+            } else if (functionName === "lap_stopwatch") {
+                confirmMessage = pick([
+                    `Lap recorded! ⏱️`,
+                    `Got that lap! Keep going!`,
+                    `Lap marked! You're doing great. 🏃`
                 ]);
             } else if (functionName === "add_stage") {
                 confirmMessage = pick([
